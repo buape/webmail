@@ -1,4 +1,4 @@
-import type { Email, Mailbox, StateChange, AccountStates, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, FileNodeFilter, Principal, PushSubscription } from "./types";
+import type { Email, Mailbox, StateChange, AccountStates, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, FileNodeFilter, Principal, PushSubscription, EmailSubmission, ScheduledEmail, SendEmailResult } from "./types";
 import type { SieveScript, SieveCapabilities } from "./sieve-types";
 import type { IJMAPClient } from "./client-interface";
 import { toWildcardQuery } from "./search-utils";
@@ -60,6 +60,12 @@ interface JMAPEmailHeader {
 }
 
 type JMAPMethodCall = [string, Record<string, unknown>, string];
+
+const SUBMISSION_USING = [
+  'urn:ietf:params:jmap:core',
+  'urn:ietf:params:jmap:mail',
+  'urn:ietf:params:jmap:submission',
+] as const;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type JMAPResponseResult = Record<string, any>;
@@ -273,6 +279,27 @@ function namespaceMailboxIds(emails: Email[], accountId: string): void {
 function computeHasMore(position: number, emailCount: number, total: number, limit: number): boolean {
   if (total > 0) return (position + emailCount) < total;
   return emailCount === limit;
+}
+
+function hasSubmissionMethod(methodCalls: JMAPMethodCall[]): boolean {
+  return methodCalls.some(([method]) => method.startsWith('Identity/') || method.startsWith('EmailSubmission/'));
+}
+
+function isSmimeEmail(email: Email): boolean {
+  const types: string[] = [];
+  const collect = (part: Email['bodyStructure']): void => {
+    if (!part) return;
+    if (part.type) types.push(part.type.toLowerCase());
+    part.subParts?.forEach(collect);
+  };
+  collect(email.bodyStructure);
+  email.attachments?.forEach(att => types.push((att.type || '').toLowerCase()));
+  return types.some(type =>
+    type.includes('pkcs7') ||
+    type.includes('x-pkcs7') ||
+    type === 'application/pkcs7-mime' ||
+    type === 'application/pkcs7-signature'
+  );
 }
 
 /**
@@ -666,7 +693,7 @@ export class JMAPClient implements IJMAPClient {
     }
 
     const requestBody = {
-      using: using || ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+      using: using || (hasSubmissionMethod(methodCalls) ? [...SUBMISSION_USING] : ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"]),
       methodCalls,
     };
 
@@ -2054,8 +2081,10 @@ export class JMAPClient implements IJMAPClient {
     htmlBody?: string,
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>,
     inReplyTo?: string[],
-    references?: string[]
-  ): Promise<void> {
+    references?: string[],
+    sendAt?: string
+  ): Promise<SendEmailResult> {
+    if (sendAt) this.validateSendAt(sendAt);
     const emailId = `send-${Date.now()}`;
     const mailboxes = await this.getMailboxes();
     const sentMailbox = mailboxes.find(mb => mb.role === 'sent');
@@ -2162,7 +2191,7 @@ export class JMAPClient implements IJMAPClient {
       }, "1"]);
       methodCalls.push(["EmailSubmission/set", {
         accountId: this.accountId,
-        create: { "1": { emailId: `#${emailId}`, identityId: finalIdentityId } },
+        create: { "1": { emailId: `#${emailId}`, identityId: finalIdentityId, ...(sendAt ? { sendAt } : {}) } },
         onSuccessUpdateEmail,
       }, "2"]);
     } else {
@@ -2172,12 +2201,15 @@ export class JMAPClient implements IJMAPClient {
       }, "0"]);
       methodCalls.push(["EmailSubmission/set", {
         accountId: this.accountId,
-        create: { "1": { emailId: `#${emailId}`, identityId: finalIdentityId } },
+        create: { "1": { emailId: `#${emailId}`, identityId: finalIdentityId, ...(sendAt ? { sendAt } : {}) } },
         onSuccessUpdateEmail,
       }, "1"]);
     }
 
     const response = await this.request(methodCalls);
+
+    let createdEmailId: string | undefined;
+    let emailSubmissionId: string | undefined;
 
     if (response.methodResponses) {
       for (const [methodName, result] of response.methodResponses) {
@@ -2192,8 +2224,19 @@ export class JMAPClient implements IJMAPClient {
           console.error('Email send error:', firstError);
           throw new Error(firstError?.description || firstError?.type || 'Failed to send email');
         }
+
+        if (methodName === 'Email/set' && result.created?.[emailId]?.id) {
+          createdEmailId = result.created[emailId].id;
+        }
+        if (methodName === 'EmailSubmission/set' && result.created?.['1']?.id) {
+          emailSubmissionId = result.created['1'].id;
+        }
       }
     }
+
+    return sendAt
+      ? { scheduled: true, emailId: createdEmailId, emailSubmissionId, sendAt }
+      : { scheduled: false, emailId: createdEmailId, emailSubmissionId };
   }
 
   /**
@@ -2819,6 +2862,37 @@ export class JMAPClient implements IJMAPClient {
   getMaxObjectsInGet(): number {
     const coreCapability = this.capabilities["urn:ietf:params:jmap:core"] as { maxObjectsInGet?: number } | undefined;
     return coreCapability?.maxObjectsInGet || 500;
+  }
+
+  getMaxDelayedSend(accountId?: string): number {
+    const id = accountId || this.accountId;
+    const submissionCapability = this.session?.accounts?.[id]?.accountCapabilities?.["urn:ietf:params:jmap:submission"] as { maxDelayedSend?: number } | undefined;
+    return typeof submissionCapability?.maxDelayedSend === 'number' ? submissionCapability.maxDelayedSend : 0;
+  }
+
+  hasDelayedSend(accountId?: string): boolean {
+    const id = accountId || this.accountId;
+    return this.supportsEmailSubmission()
+      && this.hasAccountCapability('urn:ietf:params:jmap:submission', id)
+      && this.getMaxDelayedSend(id) > 0;
+  }
+
+  private validateSendAt(sendAt: string, accountId?: string): void {
+    const time = new Date(sendAt).getTime();
+    if (!Number.isFinite(time)) {
+      throw new Error('Scheduled send time is invalid');
+    }
+    const now = Date.now();
+    if (time <= now) {
+      throw new Error('Scheduled send time must be in the future');
+    }
+    const maxDelayedSend = this.getMaxDelayedSend(accountId);
+    if (!this.hasDelayedSend(accountId) || maxDelayedSend <= 0) {
+      throw new Error('Scheduled send is not supported for this account');
+    }
+    if (time > now + maxDelayedSend * 1000) {
+      throw new Error('Scheduled send time is later than the server allows');
+    }
   }
 
   getEventSourceUrl(): string | null {
@@ -5287,7 +5361,9 @@ export class JMAPClient implements IJMAPClient {
     identityId: string,
     sentMailboxId: string,
     draftMailboxId?: string,
-  ): Promise<void> {
+    sendAt?: string,
+  ): Promise<SendEmailResult> {
+    if (sendAt) this.validateSendAt(sendAt);
     // Upload the raw message
     const file = new File([blob], 'message.eml', { type: 'message/rfc822' });
     const { blobId } = await this.uploadBlob(file);
@@ -5312,6 +5388,7 @@ export class JMAPClient implements IJMAPClient {
           'raw-submit': {
             emailId: '#raw-import',
             identityId,
+            ...(sendAt ? { sendAt } : {}),
           },
         },
         ...(draftMailboxId ? {
@@ -5327,6 +5404,8 @@ export class JMAPClient implements IJMAPClient {
     ];
 
     const response = await this.request(methodCalls);
+    let emailId: string | undefined;
+    let emailSubmissionId: string | undefined;
 
     // Check for errors
     for (const [methodName, result] of response.methodResponses ?? []) {
@@ -5338,6 +5417,167 @@ export class JMAPClient implements IJMAPClient {
         const firstErr = Object.values(r.notCreated)[0];
         throw new Error(firstErr?.description || firstErr?.type || 'Failed to send raw email');
       }
+      if (methodName === 'Email/import') {
+        emailId = (result as { created?: Record<string, { id?: string }> }).created?.['raw-import']?.id;
+      }
+      if (methodName === 'EmailSubmission/set') {
+        emailSubmissionId = (result as { created?: Record<string, { id?: string }> }).created?.['raw-submit']?.id;
+      }
+    }
+
+    return sendAt
+      ? { scheduled: true, emailId, emailSubmissionId, sendAt, isSmime: true }
+      : { scheduled: false, emailId, emailSubmissionId, isSmime: true };
+  }
+
+  async getScheduledEmails(limit = 50, position = 0): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number }> {
+    if (!this.hasDelayedSend()) {
+      return { emails: [], hasMore: false, total: 0 };
+    }
+
+    const queryResponse = await this.request([
+      ['EmailSubmission/query', {
+        accountId: this.accountId,
+        filter: { undoStatus: 'pending' },
+        sort: [{ property: 'sendAt', isAscending: true }],
+        limit,
+        position,
+      }, '0'],
+    ]);
+
+    const query = queryResponse.methodResponses?.[0]?.[1] as { ids?: string[]; total?: number; position?: number } | undefined;
+    const ids = query?.ids ?? [];
+    if (ids.length === 0) {
+      return { emails: [], hasMore: false, total: query?.total ?? 0 };
+    }
+
+    const submissionResponse = await this.request([
+      ['EmailSubmission/get', {
+        accountId: this.accountId,
+        ids,
+        properties: ['id', 'emailId', 'identityId', 'sendAt', 'undoStatus'],
+      }, '0'],
+    ]);
+    const submissions = ((submissionResponse.methodResponses?.[0]?.[1]?.list ?? []) as EmailSubmission[])
+      .filter(submission => submission.sendAt && Number.isFinite(new Date(submission.sendAt).getTime()));
+
+    if (submissions.length === 0) {
+      return { emails: [], hasMore: false, total: query?.total ?? 0 };
+    }
+
+    const emailResponse = await this.request([
+      ['Email/get', {
+        accountId: this.accountId,
+        ids: submissions.map(submission => submission.emailId),
+        properties: [
+          'id', 'threadId', 'mailboxIds', 'keywords', 'size', 'receivedAt', 'from', 'to', 'cc', 'bcc', 'replyTo',
+          'subject', 'preview', 'textBody', 'htmlBody', 'bodyValues', 'attachments', 'hasAttachment', 'sentAt',
+          'messageId', 'inReplyTo', 'references', 'headers', 'blobId', 'bodyStructure',
+        ],
+        fetchTextBodyValues: true,
+        fetchHTMLBodyValues: true,
+        fetchAllBodyValues: true,
+        maxBodyValueBytes: 256000,
+      }, '0'],
+    ]);
+
+    const emailById = new Map(((emailResponse.methodResponses?.[0]?.[1]?.list ?? []) as Email[]).map(email => [email.id, email]));
+    const emails = submissions
+      .map((submission): ScheduledEmail | null => {
+        const email = emailById.get(submission.emailId);
+        if (!email || !submission.sendAt) return null;
+        return {
+          ...email,
+          scheduledSendAt: submission.sendAt,
+          emailSubmissionId: submission.id,
+          scheduledIdentityId: submission.identityId,
+          scheduledUndoStatus: submission.undoStatus,
+          isScheduled: true,
+          isSmimeScheduled: isSmimeEmail(email),
+        };
+      })
+      .filter((email): email is ScheduledEmail => email !== null)
+      .sort((a, b) => new Date(a.scheduledSendAt).getTime() - new Date(b.scheduledSendAt).getTime());
+
+    const total = query?.total ?? emails.length;
+    return { emails, hasMore: computeHasMore(position, ids.length, total, limit), total };
+  }
+
+  async cancelEmailSubmission(submissionId: string): Promise<void> {
+    const response = await this.request([
+      ['EmailSubmission/set', {
+        accountId: this.accountId,
+        update: { [submissionId]: { undoStatus: 'canceled' } },
+      }, '0'],
+    ]);
+    const result = response.methodResponses?.[0]?.[1];
+    const error = result?.notUpdated?.[submissionId];
+    if (error) {
+      throw new Error(error.description || error.type || 'Failed to cancel scheduled send');
+    }
+  }
+
+  async rescheduleEmailSubmission(submissionId: string, emailId: string, identityId: string, sendAt: string): Promise<SendEmailResult> {
+    this.validateSendAt(sendAt);
+    const mailboxes = await this.getMailboxes();
+    const draftsMailbox = mailboxes.find(mb => mb.role === 'drafts');
+    const sentMailbox = mailboxes.find(mb => mb.role === 'sent');
+    const response = await this.request([
+      ['EmailSubmission/set', {
+        accountId: this.accountId,
+        create: { replacement: { emailId, identityId, sendAt } },
+        ...(draftsMailbox && sentMailbox ? {
+          onSuccessUpdateEmail: {
+            '#replacement': {
+              [`mailboxIds/${draftsMailbox.id}`]: null,
+              [`mailboxIds/${sentMailbox.id}`]: true,
+              'keywords/$draft': null,
+            },
+          },
+        } : {}),
+      }, '0'],
+    ]);
+    const result = response.methodResponses?.[0]?.[1];
+    const createError = result?.notCreated?.replacement;
+    if (createError) {
+      throw new Error(createError.description || createError.type || 'Failed to reschedule email');
+    }
+    const replacementId = result?.created?.replacement?.id;
+    if (!replacementId) {
+      throw new Error('Server did not return a replacement scheduled send ID');
+    }
+    try {
+      await this.cancelEmailSubmission(submissionId);
+    } catch (error) {
+      try {
+        await this.cancelEmailSubmission(replacementId);
+      } catch (cleanupError) {
+        console.error('Failed to clean up replacement scheduled send after reschedule failure:', cleanupError);
+      }
+      const message = error instanceof Error ? error.message : 'Failed to cancel original scheduled send';
+      throw new Error(`Reschedule created a replacement but could not cancel the original: ${message}`);
+    }
+    return { scheduled: true, emailId, emailSubmissionId: replacementId, sendAt };
+  }
+
+  async restoreEmailToDraft(emailId: string, draftMailboxId: string, sentMailboxId?: string): Promise<void> {
+    const update: Record<string, unknown> = {
+      [`mailboxIds/${draftMailboxId}`]: true,
+      'keywords/$draft': true,
+    };
+    if (sentMailboxId) {
+      update[`mailboxIds/${sentMailboxId}`] = null;
+    }
+    const response = await this.request([
+      ['Email/set', {
+        accountId: this.accountId,
+        update: { [emailId]: update },
+      }, '0'],
+    ]);
+    const result = response.methodResponses?.[0]?.[1];
+    const error = result?.notUpdated?.[emailId];
+    if (error) {
+      throw new Error(error.description || error.type || 'Failed to restore email to drafts');
     }
   }
 

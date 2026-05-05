@@ -28,6 +28,7 @@ import {
   FlaskConical,
   PlayCircle,
   Loader2,
+  CalendarClock,
 } from "lucide-react";
 import { cn, buildMailboxTree, MailboxNode } from "@/lib/utils";
 import { Mailbox } from "@/lib/jmap/types";
@@ -67,6 +68,7 @@ interface SidebarProps {
   onRenameFolder?: (mailboxId: string) => void;
   onDeleteFolder?: (mailboxId: string) => void;
   onRefreshMailboxes?: () => void;
+  scheduledTotal?: number;
   className?: string;
 }
 
@@ -637,6 +639,7 @@ export function Sidebar({
   onRenameFolder,
   onDeleteFolder,
   onRefreshMailboxes,
+  scheduledTotal = 0,
   className,
 }: SidebarProps) {
   const router = useRouter();
@@ -927,20 +930,31 @@ export function Sidebar({
                   {!isCollapsed && t("loading_mailboxes")}
                 </div>
               ) : (
-                ownTree.map((node) => (
-                  <MailboxTreeItem
-                    key={node.id}
-                    node={node}
-                    selectedMailbox={selectedKeyword ? "" : selectedMailbox}
-                    expandedFolders={expandedFolders}
-                    onMailboxSelect={onMailboxSelect}
-                    onToggleExpand={handleToggleExpand}
+                <>
+                  {ownTree.map((node) => (
+                    <MailboxTreeItem
+                      key={node.id}
+                      node={node}
+                      selectedMailbox={selectedKeyword ? "" : selectedMailbox}
+                      expandedFolders={expandedFolders}
+                      onMailboxSelect={onMailboxSelect}
+                      onToggleExpand={handleToggleExpand}
+                      isCollapsed={isCollapsed}
+                      onUnreadFilterClick={onUnreadFilterClick}
+                      colorful={colorfulSidebarIcons}
+                      onContextMenu={handleMailboxContextMenu}
+                    />
+                  ))}
+                  <SidebarRow
+                    icon={<CalendarClock className={cn("w-4 h-4 flex-shrink-0", selectedMailbox === '__scheduled__' ? "text-foreground" : "text-muted-foreground")} />}
+                    label={t('scheduled')}
+                    depth={0}
+                    isSelected={!selectedKeyword && selectedMailbox === '__scheduled__'}
+                    total={scheduledTotal}
+                    onClick={() => onMailboxSelect?.('__scheduled__')}
                     isCollapsed={isCollapsed}
-                    onUnreadFilterClick={onUnreadFilterClick}
-                    colorful={colorfulSidebarIcons}
-                    onContextMenu={handleMailboxContextMenu}
                   />
-                ))
+                </>
               )}
             </>
           )}

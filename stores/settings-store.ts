@@ -40,6 +40,7 @@ export type ToolbarPosition = 'top' | 'below-subject';
 export type ArchiveMode = 'single' | 'year' | 'month';
 export type MailLayout = 'split' | 'focus';
 export type CalendarHoverPreview = 'off' | 'instant' | 'delay-500ms' | 'delay-1s' | 'delay-2s';
+export type SendDelaySeconds = 0 | 10 | 30 | 60;
 
 export type HoverAction = 'delete' | 'star' | 'markRead' | 'archive' | 'tag' | 'spam';
 export type HoverActionsMode = 'inline' | 'floating';
@@ -143,6 +144,7 @@ interface SettingsState {
   autoSelectReplyIdentity: boolean;
   plainTextMode: boolean; // Send plain text only (no rich text editor)
   subAddressDelimiter: string; // Character separating user from tag (e.g. "user+tag@")
+  sendDelaySeconds: SendDelaySeconds;
 
   // Privacy & Security
   sessionTimeout: number; // minutes (0 = never)
@@ -296,6 +298,7 @@ const DEFAULT_SETTINGS = {
   autoSelectReplyIdentity: false,
   plainTextMode: false,
   subAddressDelimiter: DEFAULT_SUB_ADDRESS_DELIMITER,
+  sendDelaySeconds: 0 as SendDelaySeconds,
 
   // Privacy & Security
   sessionTimeout: 0, // Never
@@ -468,6 +471,7 @@ export const useSettingsStore = create<SettingsState>()(
           autoSelectReplyIdentity: state.autoSelectReplyIdentity,
           plainTextMode: state.plainTextMode,
           subAddressDelimiter: state.subAddressDelimiter,
+          sendDelaySeconds: state.sendDelaySeconds,
           sessionTimeout: state.sessionTimeout,
           emailNotificationsEnabled: state.emailNotificationsEnabled,
           emailNotificationSound: state.emailNotificationSound,
@@ -522,6 +526,10 @@ export const useSettingsStore = create<SettingsState>()(
           Object.keys(settings).forEach((key) => {
             if (key in DEFAULT_SETTINGS) {
               if (key === 'subAddressDelimiter' && !isValidSubAddressDelimiter(settings[key])) {
+                return;
+              }
+              if (key === 'sendDelaySeconds' && ![0, 10, 30, 60].includes(settings[key])) {
+                set({ sendDelaySeconds: 0 });
                 return;
               }
               set({ [key]: settings[key] });
@@ -698,6 +706,9 @@ export const useSettingsStore = create<SettingsState>()(
         if (version < 2 && state.listDensity) {
           state.density = state.listDensity;
           delete state.listDensity;
+        }
+        if (![0, 10, 30, 60].includes(state.sendDelaySeconds as number)) {
+          state.sendDelaySeconds = 0;
         }
         return state as unknown as SettingsState;
       },

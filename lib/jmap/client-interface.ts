@@ -1,4 +1,4 @@
-import type { Email, Mailbox, StateChange, AccountStates, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, Principal, PushSubscription } from "./types";
+import type { Email, Mailbox, StateChange, AccountStates, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, Principal, PushSubscription, ScheduledEmail, SendEmailResult } from "./types";
 import type { SieveScript, SieveCapabilities } from "./sieve-types";
 
 /**
@@ -31,6 +31,8 @@ export interface IJMAPClient {
   getMaxSizeUpload(): number;
   getMaxCallsInRequest(): number;
   getMaxObjectsInGet(): number;
+  getMaxDelayedSend(accountId?: string): number;
+  hasDelayedSend(accountId?: string): boolean;
   getEventSourceUrl(): string | null;
   supportsEmailSubmission(): boolean;
   supportsQuota(): boolean;
@@ -146,7 +148,14 @@ export interface IJMAPClient {
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>,
     inReplyTo?: string[],
     references?: string[],
-  ): Promise<void>;
+    sendAt?: string,
+  ): Promise<SendEmailResult>;
+
+  sendRawEmail(blob: Blob, identityId: string, sentMailboxId: string, draftMailboxId?: string, sendAt?: string): Promise<SendEmailResult>;
+  getScheduledEmails(limit?: number, position?: number): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number }>;
+  cancelEmailSubmission(submissionId: string): Promise<void>;
+  rescheduleEmailSubmission(submissionId: string, emailId: string, identityId: string, sendAt: string): Promise<SendEmailResult>;
+  restoreEmailToDraft(emailId: string, draftMailboxId: string, sentMailboxId?: string): Promise<void>;
 
   sendImipReply(opts: {
     organizerEmail: string;
@@ -275,5 +284,4 @@ export interface IJMAPClient {
   // ── S/MIME raw-email helpers ──────────────────────────────────
   importRawEmail(blob: Blob, mailboxIds: Record<string, boolean>, keywords?: Record<string, boolean>): Promise<string>;
   submitEmail(emailId: string, identityId: string): Promise<void>;
-  sendRawEmail(blob: Blob, identityId: string, sentMailboxId: string, draftMailboxId?: string): Promise<void>;
 }

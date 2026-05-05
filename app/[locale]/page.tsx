@@ -62,6 +62,8 @@ import { useThemeStore } from "@/stores/theme-store";
 import { appLifecycleHooks, uiHooks, routerHooks, toastHooks, emailHooks } from "@/lib/plugin-hooks";
 import type { EmailReadView } from "@/lib/plugin-types";
 
+const SCHEDULED_MAILBOX_ID = '__scheduled__';
+
 function emailToReadView(email: Email): EmailReadView {
   return {
     id: email.id,
@@ -268,6 +270,21 @@ export default function Home() {
     fetchTagCounts,
     fetchEmailContent,
     isUnifiedView,
+    scheduledEmails,
+    scheduledTotal,
+    scheduledHasMore,
+    isLoadingScheduled,
+    isScheduledView,
+    setScheduledView,
+    fetchScheduledEmails,
+    loadMoreScheduledEmails,
+    cancelScheduledEmail,
+    cancelScheduledEmailForEdit,
+    rescheduleScheduledEmail,
+    refreshScheduledMetadata,
+    cancelUndoSend,
+    clearPendingUndoSend,
+    pendingUndoSend,
     fetchUnifiedEmails: fetchUnifiedEmailsAction,
     refreshUnifiedCounts,
     exitUnifiedView,
@@ -284,6 +301,9 @@ export default function Home() {
   } = useEmailStore();
 
   const enableUnifiedMailbox = useSettingsStore((s) => s.enableUnifiedMailbox);
+  const activeEmails = isScheduledView ? scheduledEmails : emails;
+  const activeHasMore = isScheduledView ? scheduledHasMore : hasMoreEmails;
+  const activeIsLoading = isScheduledView ? isLoadingScheduled : isLoading;
   const accounts = useAccountStore((s) => s.accounts);
   const connectedAccountsSignature = useMemo(
     () => accounts.filter((a) => a.isConnected).map((a) => a.id).sort().join(","),
@@ -337,7 +357,7 @@ export default function Home() {
     conversationThreadId: null as string | null,
   });
   navRestoreStateRef.current.client = client;
-  navRestoreStateRef.current.emails = emails;
+  navRestoreStateRef.current.emails = activeEmails;
   navRestoreStateRef.current.mailboxes = mailboxes;
   navRestoreStateRef.current.selectedMailbox = selectedMailbox;
   navRestoreStateRef.current.selectedEmailId = selectedEmail?.id ?? null;
@@ -363,7 +383,19 @@ export default function Home() {
 
     // Restore mailbox selection. selectMailbox clears the current email,
     // which is fine because we re-apply the saved email below.
-    if (state.mailboxId && state.mailboxId !== ctx.selectedMailbox) {
+    if (state.mailboxId === SCHEDULED_MAILBOX_ID) {
+      setScheduledView(true);
+      selectMailbox(SCHEDULED_MAILBOX_ID);
+      selectEmail(null);
+      if (ctx.client) {
+        try {
+          await fetchScheduledEmails(ctx.client);
+        } catch (error) {
+          debug.error('Failed to fetch scheduled emails on history restore:', error);
+        }
+      }
+    } else if (state.mailboxId && state.mailboxId !== ctx.selectedMailbox) {
+      setScheduledView(false);
       selectMailbox(state.mailboxId);
       if (ctx.client) {
         try {
@@ -424,19 +456,19 @@ export default function Home() {
   // Keyboard shortcuts handlers
   const keyboardHandlers = useMemo(() => ({
     onNextEmail: () => {
-      if (emails.length === 0) return;
-      const currentIndex = selectedEmail ? emails.findIndex(e => e.id === selectedEmail.id) : -1;
-      const nextIndex = currentIndex < emails.length - 1 ? currentIndex + 1 : currentIndex;
-      if (nextIndex >= 0 && nextIndex < emails.length) {
-        handleEmailSelect(emails[nextIndex]);
+      if (activeEmails.length === 0) return;
+      const currentIndex = selectedEmail ? activeEmails.findIndex(e => e.id === selectedEmail.id) : -1;
+      const nextIndex = currentIndex < activeEmails.length - 1 ? currentIndex + 1 : currentIndex;
+      if (nextIndex >= 0 && nextIndex < activeEmails.length) {
+        handleEmailSelect(activeEmails[nextIndex]);
       }
     },
     onPreviousEmail: () => {
-      if (emails.length === 0) return;
-      const currentIndex = selectedEmail ? emails.findIndex(e => e.id === selectedEmail.id) : emails.length;
+      if (activeEmails.length === 0) return;
+      const currentIndex = selectedEmail ? activeEmails.findIndex(e => e.id === selectedEmail.id) : activeEmails.length;
       const prevIndex = currentIndex > 0 ? currentIndex - 1 : 0;
-      if (prevIndex >= 0 && prevIndex < emails.length) {
-        handleEmailSelect(emails[prevIndex]);
+      if (prevIndex >= 0 && prevIndex < activeEmails.length) {
+        handleEmailSelect(activeEmails[prevIndex]);
       }
     },
     onOpenEmail: () => {
@@ -452,18 +484,23 @@ export default function Home() {
       }
     },
     onReply: () => {
+      if (isScheduledView) return;
       if (selectedEmail) handleReply();
     },
     onReplyAll: () => {
+      if (isScheduledView) return;
       if (selectedEmail) handleReplyAll();
     },
     onForward: () => {
+      if (isScheduledView) return;
       if (selectedEmail) handleForward();
     },
     onToggleStar: () => {
+      if (isScheduledView) return;
       if (selectedEmail) handleToggleStar();
     },
     onArchive: async () => {
+      if (isScheduledView) return;
       if (selectedEmailIds.size > 0 && client) {
         try {
           await batchArchive(client);
@@ -475,6 +512,7 @@ export default function Home() {
       }
     },
     onDelete: async () => {
+      if (isScheduledView) return;
       if (selectedEmailIds.size > 0 && client) {
         const currentMailbox = mailboxes.find(m => m.id === selectedMailbox);
         const isInTrash = currentMailbox?.role === 'trash';
@@ -504,6 +542,7 @@ export default function Home() {
       }
     },
     onMarkAsUnread: async () => {
+      if (isScheduledView) return;
       if (!client) return;
       if (selectedEmailIds.size > 0) {
         await batchMarkAsRead(client, false);
@@ -512,6 +551,7 @@ export default function Home() {
       }
     },
     onMarkAsRead: async () => {
+      if (isScheduledView) return;
       if (!client) return;
       if (selectedEmailIds.size > 0) {
         await batchMarkAsRead(client, true);
@@ -520,6 +560,7 @@ export default function Home() {
       }
     },
     onToggleSpam: async () => {
+      if (isScheduledView) return;
       const currentMailbox = mailboxes.find(m => m.id === selectedMailbox);
       const isInJunk = currentMailbox?.role === 'junk';
       if (selectedEmailIds.size > 0 && client) {
@@ -547,6 +588,7 @@ export default function Home() {
       if (isMobile) setActiveView('viewer');
     },
     onFocusSearch: () => {
+      if (isScheduledView) return;
       const searchInput = document.querySelector('[data-search-input]') as HTMLInputElement;
       if (searchInput) {
         searchInput.focus();
@@ -558,22 +600,27 @@ export default function Home() {
     },
     onRefresh: async () => {
       if (client && selectedMailbox) {
-        await fetchEmails(client, selectedMailbox);
+        if (selectedMailbox === SCHEDULED_MAILBOX_ID) {
+          await fetchScheduledEmails(client);
+        } else {
+          await fetchEmails(client, selectedMailbox);
+        }
       }
     },
     onSelectAll: () => {
+      if (isScheduledView) return;
       selectAllEmails();
     },
     onDeselectAll: () => {
       clearSelection();
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [emails, selectedEmail, client, selectedMailbox, isMobile, isTablet, selectedEmailIds, mailboxes]);
+  }), [activeEmails, selectedEmail, client, selectedMailbox, isMobile, isTablet, selectedEmailIds, mailboxes, isScheduledView]);
 
   // Initialize keyboard shortcuts
   useKeyboardShortcuts({
     enabled: isAuthenticated && !showComposer,
-    emails,
+    emails: activeEmails,
     selectedEmailId: selectedEmail?.id,
     selectionCount: selectedEmailIds.size,
     handlers: keyboardHandlers,
@@ -586,12 +633,29 @@ export default function Home() {
     onRefresh: async () => {
       if (!client) return;
       const state = useEmailStore.getState();
-      await Promise.all([
-        state.fetchMailboxes(client),
-        state.selectedMailbox ? state.fetchEmails(client, state.selectedMailbox) : state.fetchEmails(client),
-      ]);
+      if (state.isScheduledView || state.selectedMailbox === SCHEDULED_MAILBOX_ID) {
+        await Promise.all([
+          state.fetchMailboxes(client),
+          state.fetchScheduledEmails(client),
+        ]);
+      } else {
+        await state.fetchMailboxes(client);
+        await state.refreshScheduledMetadata(client);
+        await (state.selectedMailbox ? state.fetchEmails(client, state.selectedMailbox) : state.fetchEmails(client));
+      }
     },
   });
+
+  useEffect(() => {
+    if (!pendingUndoSend) return;
+    const sendAt = new Date(pendingUndoSend.sendAt).getTime();
+    if (!Number.isFinite(sendAt) || sendAt <= Date.now()) {
+      clearPendingUndoSend();
+      return;
+    }
+    const timer = setTimeout(clearPendingUndoSend, sendAt - Date.now());
+    return () => clearTimeout(timer);
+  }, [clearPendingUndoSend, pendingUndoSend]);
 
   // Update page title based on context
   useEffect(() => {
@@ -694,7 +758,9 @@ export default function Home() {
             return;
           }
 
-          // Fetch emails for the selected mailbox
+          await refreshScheduledMetadata(client);
+
+          // Fetch emails for the selected mailbox after scheduled metadata is available.
           if (selectedMailboxId) {
             await fetchEmails(client, selectedMailboxId);
           } else {
@@ -741,7 +807,7 @@ export default function Home() {
         client.closePushNotifications();
       }
     };
-  }, [isAuthenticated, client, mailboxes.length, fetchMailboxes, fetchEmails, fetchQuota, fetchTagCounts, handleStateChange, setPushConnected]);
+  }, [isAuthenticated, client, mailboxes.length, fetchMailboxes, fetchEmails, fetchQuota, fetchTagCounts, refreshScheduledMetadata, handleStateChange, setPushConnected]);
 
   // Keep unified mailbox counts in sync when the feature is enabled and more
   // than one account is connected. Runs whenever the set of connected accounts
@@ -822,7 +888,7 @@ export default function Home() {
     }
 
     // Only set timeout if there's a selected email, it's unread, and we have a client
-    if (!selectedEmail || !client || selectedEmail.keywords?.$seen) {
+    if (!selectedEmail || !client || selectedEmail.keywords?.$seen || isScheduledView) {
       return;
     }
 
@@ -856,7 +922,7 @@ export default function Home() {
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedEmail?.id]);
+  }, [selectedEmail?.id, isScheduledView]);
 
   // Handle new email notifications - play sound
   useEffect(() => {
@@ -896,6 +962,7 @@ export default function Home() {
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>;
     inReplyTo?: string[];
     references?: string[];
+    sendAt?: string;
   }) => {
     if (!client) return;
 
@@ -903,8 +970,14 @@ export default function Home() {
       const effectiveMode = pendingDraft?.mode ?? composerMode;
       const originalEmailId = selectedEmail?.id;
 
-      await sendEmail(client, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references);
+      const result = await sendEmail(client, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references, data.sendAt);
       setShowComposer(false);
+      if (result.scheduled) {
+        await refreshScheduledMetadata(client);
+        if (isScheduledView) await fetchScheduledEmails(client);
+        toast.success(t('email_viewer.scheduled_send_created'));
+        return;
+      }
 
       // Mark the original email with $answered or $forwarded keyword
       if (originalEmailId && (effectiveMode === 'reply' || effectiveMode === 'replyAll')) {
@@ -922,7 +995,7 @@ export default function Home() {
       }
 
       // Refresh the current mailbox to update the UI
-      await fetchEmails(client, selectedMailbox);
+      if (!isScheduledView) await fetchEmails(client, selectedMailbox);
     } catch (error) {
       console.error("Failed to send email:", error);
     }
@@ -1236,7 +1309,25 @@ export default function Home() {
   };
 
   const handleMailboxSelect = async (mailboxId: string) => {
+    if (mailboxId === SCHEDULED_MAILBOX_ID) {
+      if (isUnifiedView) exitUnifiedView();
+      setScheduledView(true);
+      selectMailbox(mailboxId);
+      selectEmail(null);
+      clearSelection();
+      if (isMobile) {
+        setSidebarOpen(false);
+        setActiveView("list");
+      }
+      if (isTablet) {
+        setTabletListVisible(true);
+      }
+      if (client) await fetchScheduledEmails(client);
+      return;
+    }
+
     if (isUnifiedMailboxId(mailboxId)) {
+      setScheduledView(false);
       const role = UNIFIED_ROLE_BY_ID[mailboxId];
       if (!role) return;
 
@@ -1261,6 +1352,7 @@ export default function Home() {
     if (isUnifiedView) {
       exitUnifiedView();
     }
+    setScheduledView(false);
 
     selectMailbox(mailboxId);
     selectEmail(null); // Clear selected email when switching mailboxes
@@ -1287,6 +1379,7 @@ export default function Home() {
   };
 
   const handleTagSelect = async (keywordId: string | null) => {
+    setScheduledView(false);
     selectKeyword(keywordId);
 
     // On mobile, close sidebar and go to list view
@@ -1627,6 +1720,16 @@ export default function Home() {
     const finalBody = appendPlainTextSignature(body, primaryIdentity);
 
     const originalEmailId = selectedEmail.id;
+    const sendDelaySeconds = useSettingsStore.getState().sendDelaySeconds;
+    let sendAt: string | undefined;
+    if (sendDelaySeconds > 0) {
+      if (!client.hasDelayedSend()) {
+        const confirmed = window.confirm(t('email_composer.send_delay_unsupported_confirm'));
+        if (!confirmed) return;
+      } else {
+        sendAt = new Date(Date.now() + sendDelaySeconds * 1000).toISOString();
+      }
+    }
 
     // RFC 5322 §3.6.4 threading — keep the conversation stitched together (#234).
     const threading = computeReplyThreadingHeaders({
@@ -1635,7 +1738,7 @@ export default function Home() {
     });
 
     // Send reply with just the body text
-    await sendEmail(
+    const result = await sendEmail(
       client,
       [sender.email],
       `Re: ${selectedEmail.subject || "(no subject)"}`,
@@ -1650,7 +1753,13 @@ export default function Home() {
       undefined,
       threading?.inReplyTo,
       threading?.references,
+      sendAt,
     );
+
+    if (result.scheduled) {
+      await refreshScheduledMetadata(client);
+      return;
+    }
 
     // Mark the original email as answered
     try {
@@ -1676,7 +1785,7 @@ export default function Home() {
   }
 
   // Get current mailbox name for mobile header
-  const currentMailboxName = mailboxes.find(m => m.id === selectedMailbox)?.name || "Inbox";
+  const currentMailboxName = isScheduledView ? t('sidebar.scheduled') : mailboxes.find(m => m.id === selectedMailbox)?.name || "Inbox";
   const isFocusedMailLayout = mailLayout === 'focus';
   const hasViewerContent = showComposer || Boolean(conversationThread) || Boolean(selectedEmail);
   const shouldCollapseListPane = (isTablet && !tabletListVisible) || (!isMobile && isFocusedMailLayout && hasViewerContent);
@@ -1693,7 +1802,7 @@ export default function Home() {
 
     // Show the list stub immediately so subject/sender render without
     // waiting for the body fetch — avoids the loading flicker.
-    const listEmail = emails.find(e => e.id === email.id);
+    const listEmail = activeEmails.find(e => e.id === email.id);
     if (listEmail) {
       selectEmail(listEmail);
     }
@@ -1730,6 +1839,14 @@ export default function Home() {
 
       const fullEmail = await fetchClient.getEmail(email.id, accountId);
       if (fullEmail) {
+        if (listEmail?.isScheduled) {
+          fullEmail.scheduledSendAt = listEmail.scheduledSendAt;
+          fullEmail.emailSubmissionId = listEmail.emailSubmissionId;
+          fullEmail.scheduledIdentityId = listEmail.scheduledIdentityId;
+          fullEmail.scheduledUndoStatus = listEmail.scheduledUndoStatus;
+          fullEmail.isScheduled = true;
+          fullEmail.isSmimeScheduled = listEmail.isSmimeScheduled;
+        }
         if (emailAccountId) {
           fullEmail.accountId = emailAccountId;
           fullEmail.accountLabel = listEmail?.accountLabel;
@@ -1762,14 +1879,14 @@ export default function Home() {
   };
 
   // Navigate to next/previous email in the list
-  const selectedEmailIndex = selectedEmail ? emails.findIndex(e => e.id === selectedEmail.id) : -1;
+  const selectedEmailIndex = selectedEmail ? activeEmails.findIndex(e => e.id === selectedEmail.id) : -1;
 
-  const handleNavigateNext = selectedEmailIndex >= 0 && selectedEmailIndex < emails.length - 1
-    ? () => handleEmailSelect(emails[selectedEmailIndex + 1])
+  const handleNavigateNext = selectedEmailIndex >= 0 && selectedEmailIndex < activeEmails.length - 1
+    ? () => handleEmailSelect(activeEmails[selectedEmailIndex + 1])
     : undefined;
 
   const handleNavigatePrev = selectedEmailIndex > 0
-    ? () => handleEmailSelect(emails[selectedEmailIndex - 1])
+    ? () => handleEmailSelect(activeEmails[selectedEmailIndex - 1])
     : undefined;
 
   // Handle opening conversation view on mobile
@@ -1901,6 +2018,7 @@ export default function Home() {
               mailboxes={mailboxes}
               selectedMailbox={selectedMailbox}
               selectedKeyword={selectedKeyword}
+              scheduledTotal={scheduledTotal}
               onMailboxSelect={handleMailboxSelect}
               onTagSelect={handleTagSelect}
               onUnreadFilterClick={handleUnreadFilterClick}
@@ -1968,26 +2086,27 @@ export default function Home() {
                     type="button"
                     onClick={() => {
                       if (selectedEmailIds.size > 0) {
-                        if (selectedEmailIds.size === emails.length) {
+                        if (selectedEmailIds.size === activeEmails.length) {
                           clearSelection();
                         } else {
                           selectAllEmails();
                         }
-                      } else if (emails.length > 0) {
+                      } else if (activeEmails.length > 0) {
                         const currentId = selectedEmail?.id;
-                        const target = currentId && emails.some((e) => e.id === currentId)
+                        const target = currentId && activeEmails.some((e) => e.id === currentId)
                           ? currentId
-                          : emails[0].id;
+                          : activeEmails[0].id;
                         toggleEmailSelection(target);
                       }
                     }}
+                    disabled={isScheduledView}
                     className={cn(
                       "flex-shrink-0 p-2 rounded-md transition-colors",
                       selectedEmailIds.size > 0
                         ? "bg-primary/10 text-primary"
                         : "text-muted-foreground hover:text-foreground hover:bg-muted"
                     )}
-                    title={selectedEmailIds.size > 0 ? (selectedEmailIds.size === emails.length ? t('email_list.batch_actions.clear_selection') : t('email_list.batch_actions.select_all')) : t('email_list.batch_actions.select')}
+                    title={isScheduledView ? t('email_viewer.scheduled_actions_only') : selectedEmailIds.size > 0 ? (selectedEmailIds.size === activeEmails.length ? t('email_list.batch_actions.clear_selection') : t('email_list.batch_actions.select_all')) : t('email_list.batch_actions.select')}
                   >
                     {selectedEmailIds.size > 0 ? (
                       <CheckSquare className="w-4 h-4" />
@@ -2005,8 +2124,8 @@ export default function Home() {
                       className={cn("pl-9 h-9", searchQuery && "pr-8")}
                       data-search-input
                       data-tour="search-input"
-                      disabled={isUnifiedView}
-                      title={isUnifiedView ? t("unified_mailbox.search_unavailable") : undefined}
+                      disabled={isUnifiedView || isScheduledView}
+                      title={isUnifiedView ? t("unified_mailbox.search_unavailable") : isScheduledView ? t('email_viewer.scheduled_actions_only') : undefined}
                     />
                     {searchQuery && (
                       <button
@@ -2022,15 +2141,15 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={toggleAdvancedSearch}
-                    disabled={isUnifiedView}
+                    disabled={isUnifiedView || isScheduledView}
                     className={cn(
                       "relative flex-shrink-0 p-2 rounded-md transition-colors",
-                      isUnifiedView && "opacity-50 cursor-not-allowed",
+                      (isUnifiedView || isScheduledView) && "opacity-50 cursor-not-allowed",
                       isAdvancedSearchOpen || activeFilterCount(searchFilters) > 0
                         ? "bg-primary/10 text-primary"
                         : "text-muted-foreground hover:text-foreground hover:bg-muted"
                     )}
-                    title={isUnifiedView ? t("unified_mailbox.search_unavailable") : t("advanced_search.toggle_filters")}
+                    title={isUnifiedView ? t("unified_mailbox.search_unavailable") : isScheduledView ? t('email_viewer.scheduled_actions_only') : t("advanced_search.toggle_filters")}
                   >
                     <Filter className="w-4 h-4" />
                     {!isAdvancedSearchOpen && activeFilterCount(searchFilters) > 0 && (
@@ -2172,11 +2291,17 @@ export default function Home() {
               )}
             </div>
 
-            {(searchQuery || !isFilterEmpty(searchFilters)) && !isLoading && (
+            {(searchQuery || !isFilterEmpty(searchFilters)) && !activeIsLoading && !isScheduledView && (
               <div className="px-4 py-1.5 text-xs text-muted-foreground border-b border-border bg-muted/20">
-                {hasMoreEmails
-                  ? t("advanced_search.results_found_more", { count: emails.length })
-                  : t("advanced_search.results_found", { count: emails.length })}
+                {activeHasMore
+                  ? t("advanced_search.results_found_more", { count: activeEmails.length })
+                  : t("advanced_search.results_found", { count: activeEmails.length })}
+              </div>
+            )}
+
+            {isScheduledView && !activeIsLoading && (
+              <div className="px-4 py-1.5 text-xs text-muted-foreground border-b border-border bg-muted/20">
+                {t('email_list.scheduled_count', { count: scheduledTotal })}
               </div>
             )}
 
@@ -2185,9 +2310,32 @@ export default function Home() {
 
             <ErrorBoundary fallback={EmailListErrorFallback}>
               <EmailList
-                emails={emails}
+                emails={activeEmails}
                 selectedEmailId={selectedEmail?.id}
-                isLoading={isLoading}
+                isLoading={activeIsLoading}
+                isScheduledView={isScheduledView}
+                onLoadMoreScheduled={() => client && loadMoreScheduledEmails(client)}
+                onCancelScheduled={async (email) => {
+                  if (client && email.emailSubmissionId) await cancelScheduledEmail(client, email.emailSubmissionId);
+                }}
+                onCancelScheduledForEdit={async (email) => {
+                  if (!client) return;
+                  const restored = await cancelScheduledEmailForEdit(client, email);
+                  if (email.isSmimeScheduled) {
+                    setComposerMode('compose');
+                    setPendingDraft(null);
+                  } else if (restored) {
+                    await handleEditDraft(restored);
+                    return;
+                  }
+                  setShowComposer(true);
+                  if (isMobile) setActiveView('viewer');
+                }}
+                onRescheduleScheduled={async (email, sendAt) => {
+                  if (client && email.emailSubmissionId && email.scheduledIdentityId) {
+                    await rescheduleScheduledEmail(client, email.emailSubmissionId, email.id, email.scheduledIdentityId, sendAt);
+                  }
+                }}
                 onEmailSelect={handleEmailSelect}
                 onOpenConversation={handleOpenConversation}
                 // Context menu handlers
@@ -2316,6 +2464,15 @@ export default function Home() {
                     await handleEmailSend(data);
                     setPendingDraft(null);
                   }}
+                  onScheduledSendCreated={async () => {
+                    if (client) {
+                      await refreshScheduledMetadata(client);
+                      if (isScheduledView) await fetchScheduledEmails(client);
+                    }
+                    toast.success(t('email_viewer.scheduled_send_created'));
+                    setShowComposer(false);
+                    setPendingDraft(null);
+                  }}
                   onClose={() => {
                     setShowComposer(false);
                     setComposerMode('compose');
@@ -2410,6 +2567,24 @@ export default function Home() {
                     onNavigatePrev={handleNavigatePrev}
                     onShowShortcuts={() => setShowShortcutsModal(true)}
                     onEditDraft={handleEditDraft}
+                    onCancelScheduled={async () => {
+                      if (client && selectedEmail?.emailSubmissionId) await cancelScheduledEmail(client, selectedEmail.emailSubmissionId);
+                    }}
+                    onCancelScheduledForEdit={async () => {
+                      if (!client || !selectedEmail) return;
+                      const restored = await cancelScheduledEmailForEdit(client, selectedEmail);
+                      if (selectedEmail.isSmimeScheduled) {
+                        setComposerMode('compose');
+                        setShowComposer(true);
+                        return;
+                      }
+                      if (restored) await handleEditDraft(restored);
+                    }}
+                    onRescheduleScheduled={async (sendAt) => {
+                      if (client && selectedEmail?.emailSubmissionId && selectedEmail.scheduledIdentityId) {
+                        await rescheduleScheduledEmail(client, selectedEmail.emailSubmissionId, selectedEmail.id, selectedEmail.scheduledIdentityId, sendAt);
+                      }
+                    }}
                     onCompose={() => {
                       setComposerMode('compose');
                       setShowComposer(true);
@@ -2468,6 +2643,24 @@ export default function Home() {
         <SidebarAppsModal isOpen={showAppsModal} onClose={closeAppsModal} />
         <ConfirmDialog {...confirmDialogProps} />
         <PromptDialog {...promptDialogProps} />
+        {pendingUndoSend && (
+          <div className="fixed bottom-4 left-1/2 z-[70] flex -translate-x-1/2 items-center gap-3 rounded-lg border border-border bg-background px-4 py-3 shadow-lg">
+            <span className="text-sm text-foreground">{t('email_viewer.undo_send_scheduled')}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={async () => {
+                if (!client) return;
+                const restored = await cancelUndoSend(client, pendingUndoSend);
+                if (restored && !pendingUndoSend.isSmime) {
+                  await handleEditDraft(restored);
+                }
+              }}
+            >
+              {t('email_viewer.undo_send')}
+            </Button>
+          </div>
+        )}
         <TotpReauthDialog />
       </div>
     </DragDropProvider>

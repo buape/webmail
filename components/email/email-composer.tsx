@@ -5,7 +5,7 @@ import { useFocusTrap } from "@/hooks/use-focus-trap";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { X, Paperclip, Send, Save, Check, Loader2, AlertCircle, FileText, BookmarkPlus, ShieldCheck, Lock } from "lucide-react";
+import { X, Paperclip, Send, Save, Check, Loader2, AlertCircle, FileText, BookmarkPlus, ShieldCheck, Lock, CalendarClock } from "lucide-react";
 import { cn, formatFileSize, formatDateTime, generateUUID } from "@/lib/utils";
 import { debug } from "@/lib/debug";
 import { toast } from "@/stores/toast-store";
@@ -72,7 +72,9 @@ interface EmailComposerProps {
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>;
     inReplyTo?: string[];
     references?: string[];
+    sendAt?: string;
   }) => void | Promise<void>;
+  onScheduledSendCreated?: () => void | Promise<void>;
   onClose?: () => void;
   onDiscardDraft?: (draftId: string) => void;
   onSaveState?: (data: ComposerDraftData) => void;
@@ -113,6 +115,7 @@ type ComposerAttachment = {
 
 export function EmailComposer({
   onSend,
+  onScheduledSendCreated,
   onClose,
   onDiscardDraft,
   onSaveState,
@@ -130,6 +133,7 @@ export function EmailComposer({
   const autoSelectReplyIdentity = useSettingsStore((state) => state.autoSelectReplyIdentity);
   const attachmentReminderEnabled = useSettingsStore((state) => state.attachmentReminderEnabled);
   const attachmentReminderKeywords = useSettingsStore((state) => state.attachmentReminderKeywords);
+  const sendDelaySeconds = useSettingsStore((state) => state.sendDelaySeconds);
 
   // Initialize with reply/forward data if provided
   const getInitialTo = () => {
@@ -256,6 +260,9 @@ export function EmailComposer({
   const [smimePassphraseError, setSmimePassphraseError] = useState('');
   const [showAttachmentWarning, setShowAttachmentWarning] = useState(false);
   const [attachmentWarningKeyword, setAttachmentWarningKeyword] = useState('');
+  const [showScheduleDialog, setShowScheduleDialog] = useState(false);
+  const [scheduleValue, setScheduleValue] = useState('');
+  const [scheduleError, setScheduleError] = useState('');
 
   const saveTemplateModalRef = useFocusTrap({
     isActive: showSaveAsTemplate,
@@ -855,6 +862,33 @@ export function EmailComposer({
     return undefined;
   };
 
+  const validateScheduleValue = (value: string): string | null => {
+    if (!value) return t('schedule_send_required');
+    const time = new Date(value).getTime();
+    if (!Number.isFinite(time)) return t('schedule_send_invalid');
+    if (time <= Date.now()) return t('schedule_send_future');
+    if (client) {
+      const maxDelayedSend = client.getMaxDelayedSend();
+      if (maxDelayedSend > 0 && time > Date.now() + maxDelayedSend * 1000) {
+        return t('schedule_send_too_late');
+      }
+    }
+    return null;
+  };
+
+  const getEffectiveSendAt = async (explicitSendAt?: string): Promise<string | undefined> => {
+    if (explicitSendAt) return explicitSendAt;
+    if (sendDelaySeconds === 0) return undefined;
+    if (client?.hasDelayedSend()) {
+      return new Date(Date.now() + sendDelaySeconds * 1000).toISOString();
+    }
+    const confirmed = window.confirm(t('send_delay_unsupported_confirm'));
+    if (!confirmed) {
+      throw new Error(t('send_delay_unsupported'));
+    }
+    return undefined;
+  };
+
   // Rewrite data: URLs of dropped images (tagged with data-cid) into cid:
   // references so recipient clients that strip data URIs can still render them.
   const rewriteInlineImages = (html: string): {
@@ -898,7 +932,7 @@ export function EmailComposer({
     };
   };
 
-  const handleSend = async (skipAttachmentCheck = false) => {
+  const handleSend = async (skipAttachmentCheck = false, sendAt?: string) => {
     const ccAddresses = cc.split(",").map(e => e.trim()).filter(Boolean);
     const bccAddresses = bcc.split(",").map(e => e.trim()).filter(Boolean);
 
@@ -980,6 +1014,7 @@ export function EmailComposer({
     const inlineAttachments = rewritten?.attachments ?? [];
 
     try {
+      const effectiveSendAt = await getEffectiveSendAt(sendAt);
       // S/MIME send pipeline: build raw MIME → sign → encrypt → sendRawEmail
       if ((smimeSign_ || smimeEncrypt_) && client && currentIdentity?.id) {
         // 1. Resolve S/MIME key
@@ -1096,7 +1131,16 @@ export function EmailComposer({
         }
 
         // 7. Send via raw email path
-        await sendRawEmail(client, payload, currentIdentity.id);
+        const result = await sendRawEmail(client, payload, currentIdentity.id, effectiveSendAt);
+        if (effectiveSendAt && finalDraftId) {
+          client.deleteEmail(finalDraftId).catch(err => {
+            debug.warn('email', 'Scheduled S/MIME send created, but plaintext draft cleanup failed:', err);
+            toast.warning(t('schedule_send_cleanup_warning'));
+          });
+        }
+        if (result.scheduled) {
+          await onScheduledSendCreated?.();
+        }
       } else {
         // Standard JMAP send path
         // Collect uploaded attachment blobIds for the send request
@@ -1134,6 +1178,7 @@ export function EmailComposer({
           attachments: uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
           inReplyTo: threadingHeaders?.inReplyTo,
           references: threadingHeaders?.references,
+          sendAt: effectiveSendAt,
         });
 
         if (mode === 'reply' || mode === 'replyAll') {
@@ -1157,12 +1202,28 @@ export function EmailComposer({
       setDraftId(null);
       setSubAddressTag("");
       setValidationErrors({});
+      setShowScheduleDialog(false);
+      setScheduleValue('');
+      setScheduleError('');
       // Clear ref so unmount effect doesn't re-save
       stateRef.current = { to: '', cc: '', bcc: '', subject: '', body: '', showCc: false, showBcc: false, selectedIdentityId: null, subAddressTag: '', draftId: null };
     } catch (err) {
       debug.error('Failed to send email:', err);
-      toast.error(t('send_failed'));
+      toast.error(err instanceof Error ? err.message : t('send_failed'));
     }
+  };
+
+  const handleScheduleSend = () => {
+    if (!client?.hasDelayedSend()) {
+      setScheduleError(t('schedule_send_unsupported'));
+      return;
+    }
+    const error = validateScheduleValue(scheduleValue);
+    if (error) {
+      setScheduleError(error);
+      return;
+    }
+    handleSend(false, new Date(scheduleValue).toISOString());
   };
 
   const cleanClose = () => {
@@ -1583,6 +1644,20 @@ export function EmailComposer({
             >
               <BookmarkPlus className="w-4 h-4" />
             </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setScheduleError('');
+                setScheduleValue('');
+                setShowScheduleDialog(true);
+              }}
+              disabled={!client?.hasDelayedSend()}
+              title={client?.hasDelayedSend() ? t('schedule_send') : t('schedule_send_unsupported')}
+              className="h-9 w-9"
+            >
+              <CalendarClock className="w-4 h-4" />
+            </Button>
 
             {/* S/MIME toggles */}
             {canSmimeSign && (
@@ -1664,6 +1739,29 @@ export function EmailComposer({
               }}
               onCancel={() => setShowSaveAsTemplate(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {showScheduleDialog && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 animate-in fade-in duration-150">
+          <div className="bg-background border border-border rounded-lg shadow-xl w-full max-w-md p-6 animate-in zoom-in-95 duration-200">
+            <h3 className="text-lg font-semibold text-foreground mb-2">{t('schedule_send')}</h3>
+            <p className="text-sm text-muted-foreground mb-4">{t('schedule_send_description')}</p>
+            <Input
+              type="datetime-local"
+              value={scheduleValue}
+              onChange={(e) => {
+                setScheduleValue(e.target.value);
+                setScheduleError('');
+              }}
+              className={cn(scheduleError && "border-destructive focus-visible:ring-destructive")}
+            />
+            {scheduleError && <p className="mt-2 text-sm text-destructive">{scheduleError}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setShowScheduleDialog(false)}>{tCommon('cancel')}</Button>
+              <Button onClick={handleScheduleSend} disabled={!canSend}>{t('schedule_send')}</Button>
+            </div>
           </div>
         </div>
       )}

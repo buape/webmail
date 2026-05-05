@@ -4,7 +4,7 @@ import { Email, ThreadGroup } from "@/lib/jmap/types";
 import { ThreadListItem } from "./thread-list-item";
 import { EmailContextMenu } from "./email-context-menu";
 import { cn } from "@/lib/utils";
-import { Trash2, Mail, MailX, MailOpen, Loader2, SearchX, AlertTriangle } from "lucide-react";
+import { Trash2, Mail, MailX, MailOpen, Loader2, SearchX, AlertTriangle, CalendarClock, XCircle, Edit3 } from "lucide-react";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -18,6 +18,7 @@ import { useTranslations } from "next-intl";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { SearchChips } from "@/components/search/search-chips";
 import { isFilterEmpty, DEFAULT_SEARCH_FILTERS } from "@/lib/jmap/search-utils";
+import { toast } from "@/stores/toast-store";
 
 interface EmailListProps {
   emails: Email[];
@@ -38,6 +39,11 @@ interface EmailListProps {
   onMarkAsSpam?: (email: Email) => void;
   onUndoSpam?: (email: Email) => void;
   onEditDraft?: (email: Email) => void;
+  isScheduledView?: boolean;
+  onLoadMoreScheduled?: () => void;
+  onCancelScheduled?: (email: Email) => void | Promise<void>;
+  onCancelScheduledForEdit?: (email: Email) => void | Promise<void>;
+  onRescheduleScheduled?: (email: Email, sendAt: string) => void | Promise<void>;
 }
 
 export function EmailList({
@@ -59,8 +65,14 @@ export function EmailList({
   onUndoSpam,
   onMoveToMailbox,
   onEditDraft,
+  isScheduledView = false,
+  onLoadMoreScheduled,
+  onCancelScheduled,
+  onCancelScheduledForEdit,
+  onRescheduleScheduled,
 }: EmailListProps) {
   const t = useTranslations('email_list');
+  const tComposer = useTranslations('email_composer');
   const { client } = useAuthStore();
   const {
     selectedEmailIds,
@@ -93,9 +105,9 @@ export function EmailList({
   const disableThreading = useSettingsStore((state) => state.disableThreading);
 
   const threadGroups = useMemo(() => {
-    const groups = groupEmailsByThread(emails, disableThreading);
+    const groups = groupEmailsByThread(emails, disableThreading || isScheduledView);
     return sortThreadGroups(groups);
-  }, [emails, disableThreading]);
+  }, [emails, disableThreading, isScheduledView]);
 
   const { contextMenu, openContextMenu, closeContextMenu, menuRef } = useContextMenu<Email>();
   const { dialogProps: confirmDialogProps, confirm: confirmDialog } = useConfirmDialog();
@@ -214,10 +226,38 @@ export function EmailList({
   };
 
   const handleLoadMore = useCallback(() => {
+    if (isScheduledView) {
+      onLoadMoreScheduled?.();
+      return;
+    }
     if (client && hasMoreEmails && !isLoadingMore && !isLoading) {
       loadMoreEmails(client);
     }
-  }, [client, hasMoreEmails, isLoadingMore, isLoading, loadMoreEmails]);
+  }, [client, hasMoreEmails, isLoadingMore, isLoading, isScheduledView, loadMoreEmails, onLoadMoreScheduled]);
+
+  const promptForRescheduleSendAt = useCallback((): string | null => {
+    const value = window.prompt(t('reschedule_prompt'));
+    if (!value) return null;
+    const time = new Date(value).getTime();
+    if (!Number.isFinite(time)) {
+      toast.error(tComposer('schedule_send_invalid'));
+      return null;
+    }
+    if (time <= Date.now()) {
+      toast.error(tComposer('schedule_send_future'));
+      return null;
+    }
+    if (!client?.hasDelayedSend()) {
+      toast.error(tComposer('schedule_send_unsupported'));
+      return null;
+    }
+    const maxDelayedSend = client.getMaxDelayedSend();
+    if (maxDelayedSend > 0 && time > Date.now() + maxDelayedSend * 1000) {
+      toast.error(tComposer('schedule_send_too_late'));
+      return null;
+    }
+    return new Date(time).toISOString();
+  }, [client, t, tComposer]);
 
   const handleToggleThreadExpansion = useCallback(async (threadId: string) => {
     const isExpanded = expandedThreadIds.has(threadId);
@@ -274,10 +314,15 @@ export function EmailList({
   return (
     <div className={cn("flex flex-col min-h-0", className)}>
       {/* Batch Actions Toolbar */}
+      {isScheduledView && emails.length > 0 && (
+        <div className="border-b border-border bg-muted/20 px-4 py-2 text-xs text-muted-foreground">
+          {t('scheduled_actions_hint')}
+        </div>
+      )}
       <div
         className={cn(
           "transition-all duration-300 ease-in-out overflow-hidden",
-          hasSelection ? "max-h-16 opacity-100" : "max-h-0 opacity-0"
+          hasSelection && !isScheduledView ? "max-h-16 opacity-100" : "max-h-0 opacity-0"
         )}
       >
         <div className="px-4 py-2 border-b bg-accent/30 border-border flex items-center justify-between">
@@ -401,17 +446,19 @@ export function EmailList({
         ) : emails.length === 0 && !isLoading ? (
           <div className="flex flex-col items-center justify-center h-full py-12">
             <div className="w-20 h-20 mx-auto mb-6 rounded-full bg-muted shadow-lg flex items-center justify-center">
-              {searchQuery || !isFilterEmpty(searchFilters) ? (
+              {isScheduledView ? (
+                <CalendarClock className="w-10 h-10 text-muted-foreground" />
+              ) : searchQuery || !isFilterEmpty(searchFilters) ? (
                 <SearchX className="w-10 h-10 text-muted-foreground" />
               ) : (
                 <MailX className="w-10 h-10 text-muted-foreground" />
               )}
             </div>
             <p className="text-base font-medium text-foreground">
-              {searchQuery || !isFilterEmpty(searchFilters) ? t('no_search_results') : t('no_emails')}
+              {isScheduledView ? t('no_scheduled_emails') : searchQuery || !isFilterEmpty(searchFilters) ? t('no_search_results') : t('no_emails')}
             </p>
             <p className="text-sm mt-1 text-muted-foreground">
-              {searchQuery || !isFilterEmpty(searchFilters) ? t('no_search_results_description') : t('no_emails_description')}
+              {isScheduledView ? t('no_scheduled_emails_description') : searchQuery || !isFilterEmpty(searchFilters) ? t('no_search_results_description') : t('no_emails_description')}
             </p>
           </div>
         ) : (
@@ -456,6 +503,34 @@ export function EmailList({
                       onSetColorTag={onSetColorTag}
                       onMarkAsSpam={onMarkAsSpam ? (email) => onMarkAsSpam(email) : undefined}
                     />
+                    {isScheduledView && thread.latestEmail.isScheduled && (
+                      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/10 px-4 py-2 text-xs">
+                        <span className="flex items-center gap-1 text-muted-foreground">
+                          <CalendarClock className="w-3.5 h-3.5" />
+                          {new Date(thread.latestEmail.scheduledSendAt || '').toLocaleString()}
+                        </span>
+                        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => onCancelScheduled?.(thread.latestEmail)}>
+                          <XCircle className="w-3.5 h-3.5 mr-1" />
+                          {t('cancel_scheduled_send')}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2"
+                          onClick={() => {
+                            const sendAt = promptForRescheduleSendAt();
+                            if (sendAt) onRescheduleScheduled?.(thread.latestEmail, sendAt);
+                          }}
+                        >
+                          <CalendarClock className="w-3.5 h-3.5 mr-1" />
+                          {t('reschedule_send')}
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => onCancelScheduledForEdit?.(thread.latestEmail)}>
+                          <Edit3 className="w-3.5 h-3.5 mr-1" />
+                          {thread.latestEmail.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -503,6 +578,12 @@ export function EmailList({
           onMarkAsSpam={() => onMarkAsSpam?.(contextMenu.data!)}
           onUndoSpam={() => onUndoSpam?.(contextMenu.data!)}
           onEditDraft={() => onEditDraft?.(contextMenu.data!)}
+          onCancelScheduled={() => onCancelScheduled?.(contextMenu.data!)}
+          onCancelScheduledForEdit={() => onCancelScheduledForEdit?.(contextMenu.data!)}
+          onRescheduleScheduled={() => {
+            const sendAt = promptForRescheduleSendAt();
+            if (sendAt) onRescheduleScheduled?.(contextMenu.data!, sendAt);
+          }}
           onBatchMarkAsRead={(read) => client && batchMarkAsRead(client, read)}
           onBatchDelete={() => client && batchDelete(client)}
           onBatchArchive={async () => {
