@@ -12,6 +12,8 @@ import {
 import { configManager } from '@/lib/admin/config-manager';
 import { isPublicHttpUrl } from '@/lib/security/url-guard';
 import { recordLogin } from '@/lib/telemetry/login-tracker';
+import { parseJmapServers, resolveTrustedJmapUrl } from '@/lib/admin/jmap-servers';
+import { MAX_ACCOUNT_SLOTS } from '@/lib/account-utils';
 
 const COOKIE_OPTIONS = {
   ...getCookieOptions(),
@@ -22,7 +24,7 @@ function getSlot(request: NextRequest): number {
   const raw = request.nextUrl.searchParams.get('slot');
   if (raw === null) return 0;
   const slot = parseInt(raw, 10);
-  if (isNaN(slot) || slot < 0 || slot > 4) return 0;
+  if (isNaN(slot) || slot < 0 || slot >= MAX_ACCOUNT_SLOTS) return 0;
   return slot;
 }
 
@@ -39,10 +41,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    // Pin the upstream URL to the configured JMAP server so an unauthenticated
-    // caller cannot point this route at internal hosts. Only when no server URL
-    // is configured AND the deployment explicitly allows custom JMAP endpoints
-    // do we honor the body URL — and even then it must be a public URL.
+    // Pin the upstream URL to a configured JMAP server so an unauthenticated
+    // caller cannot point this route at internal hosts. We accept the global
+    // `jmapServerUrl` and any entry from `jmapServers`. When neither matches,
+    // we fall back to the request URL only if `allowCustomJmapEndpoint` is on
+    // - and even then the URL must resolve to a public address.
     await configManager.ensureLoaded();
     const configuredServerUrl =
       configManager.get<string>('jmapServerUrl', '') ||
@@ -50,11 +53,13 @@ export async function POST(request: NextRequest) {
       process.env.NEXT_PUBLIC_JMAP_SERVER_URL ||
       '';
     const allowCustomEndpoint = configManager.get<boolean>('allowCustomJmapEndpoint', false);
+    const serverList = parseJmapServers(configManager.get<unknown>('jmapServers', []));
+    const trustedUrl = resolveTrustedJmapUrl(serverUrl, configuredServerUrl, serverList);
 
     let upstreamUrl: string;
     let upstreamTrusted: boolean;
-    if (configuredServerUrl) {
-      upstreamUrl = configuredServerUrl;
+    if (trustedUrl) {
+      upstreamUrl = trustedUrl;
       upstreamTrusted = true;
     } else if (allowCustomEndpoint) {
       if (!(await isPublicHttpUrl(serverUrl))) {
@@ -66,7 +71,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'JMAP server not configured' }, { status: 500 });
     }
 
-    const slot = typeof bodySlot === 'number' && bodySlot >= 0 && bodySlot <= 4 ? bodySlot : getSlot(request);
+    const slot = typeof bodySlot === 'number' && bodySlot >= 0 && bodySlot < MAX_ACCOUNT_SLOTS ? bodySlot : getSlot(request);
     const cookieName = sessionCookieName(slot);
     const authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
     const normalizedServerUrl = await verifyJmapAuth(upstreamUrl, authHeader, { trusted: upstreamTrusted });
@@ -181,8 +186,8 @@ export async function DELETE(request: NextRequest) {
     const all = request.nextUrl.searchParams.get('all') === 'true';
 
     if (all) {
-      // Delete all session cookies (slots 0-4)
-      for (let i = 0; i <= 4; i++) {
+      // Delete all session cookies across every slot.
+      for (let i = 0; i < MAX_ACCOUNT_SLOTS; i++) {
         cookieStore.delete(sessionCookieName(i));
         clearStalwartAuthContextInStore(cookieStore, i);
       }

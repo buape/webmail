@@ -192,7 +192,6 @@ interface SettingsState {
   // Email Display
   disableThreading: boolean; // Show emails as individual messages instead of grouped by conversation
 
-  // Experimental
   senderFavicons: boolean;
   showAvatarsInJunk: boolean; // Show profile images/favicons in the junk folder
 
@@ -346,7 +345,6 @@ const DEFAULT_SETTINGS = {
   // Email Display
   disableThreading: false,
 
-  // Experimental
   senderFavicons: true,
   showAvatarsInJunk: false,
 

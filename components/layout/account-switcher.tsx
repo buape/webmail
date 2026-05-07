@@ -6,7 +6,7 @@ import { Check, Plus, LogOut, Star, ChevronDown, AlertCircle } from "lucide-reac
 import { useTranslations } from "next-intl";
 import { useAccountStore, type AccountEntry } from "@/stores/account-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { getInitials, MAX_ACCOUNTS } from "@/lib/account-utils";
+import { getInitials, getMaxAccounts } from "@/lib/account-utils";
 import { cn } from "@/lib/utils";
 import { useRouter } from "@/i18n/navigation";
 
@@ -40,8 +40,11 @@ export function AccountSwitcher({ variant = "rail", className }: AccountSwitcher
   const [popoverStyle, setPopoverStyle] = useState<React.CSSProperties>({});
 
   const accounts = useAccountStore((s) => s.accounts);
-  const activeAccountId = useAccountStore((s) => s.activeAccountId);
   const setDefaultAccount = useAccountStore((s) => s.setDefaultAccount);
+  // Read activeAccountId from authStore so the selector matches the actually-loaded
+  // session (primaryIdentity, JMAP client). accountStore.activeAccountId is a separate
+  // persisted copy that can drift out of sync across hydration / partial persist writes.
+  const activeAccountId = useAuthStore((s) => s.activeAccountId);
   const activeAccount = accounts.find((a) => a.id === activeAccountId);
   const switchAccount = useAuthStore((s) => s.switchAccount);
   const logout = useAuthStore((s) => s.logout);
@@ -217,7 +220,7 @@ export function AccountSwitcher({ variant = "rail", className }: AccountSwitcher
           </div>
 
           {/* Separator + Add Account */}
-          {accounts.length < MAX_ACCOUNTS && (
+          {accounts.length < getMaxAccounts() && (
             <div className="border-t border-border">
               <button
                 onClick={handleAddAccount}
