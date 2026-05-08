@@ -16,14 +16,22 @@ function enableDelayedSend(client: JMAPClient) {
     capabilities: {
       'urn:ietf:params:jmap:core': {},
       'urn:ietf:params:jmap:mail': {},
-      'urn:ietf:params:jmap:submission': { maxDelayedSend: 3600, submissionExtensions: ['FUTURERELEASE'] },
+      'urn:ietf:params:jmap:submission': {},
     },
     session: {
+      primaryAccounts: {
+        'urn:ietf:params:jmap:mail': 'account-1',
+        'urn:ietf:params:jmap:submission': 'submission-account-1',
+      },
       accounts: {
         'account-1': {
           accountCapabilities: {
             'urn:ietf:params:jmap:mail': {},
-            'urn:ietf:params:jmap:submission': { maxDelayedSend: 3600, submissionExtensions: ['FUTURERELEASE'] },
+          },
+        },
+        'submission-account-1': {
+          accountCapabilities: {
+            'urn:ietf:params:jmap:submission': { maxDelayedSend: 3600, submissionExtensions: { FUTURERELEASE: true } },
           },
         },
       },
@@ -189,6 +197,7 @@ describe('JMAPClient.sendEmail threading headers', () => {
     const identityRequest = captured[1];
     expect(identityRequest.using).toContain('urn:ietf:params:jmap:submission');
     const submissionCall = captured[2].methodCalls.find(call => call[0] === 'EmailSubmission/set');
+    expect(submissionCall?.[1].accountId).toBe('submission-account-1');
     expect(submissionCall?.[1].create).toEqual({
       '1': {
         emailId: expect.stringMatching(/^#send-/),
@@ -196,7 +205,7 @@ describe('JMAPClient.sendEmail threading headers', () => {
         envelope: {
           mailFrom: {
             email: 'user@example.com',
-            parameters: { HOLDUNTIL: expect.stringMatching(/^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} \+0000$/) },
+            parameters: { HOLDFOR: expect.stringMatching(/^\d+$/) },
           },
         },
       },

@@ -58,7 +58,7 @@ export class DemoJMAPClient implements IJMAPClient {
     return {
       'urn:ietf:params:jmap:core': { maxSizeUpload: 50_000_000, maxCallsInRequest: 16, maxObjectsInGet: 500 },
       'urn:ietf:params:jmap:mail': {},
-      'urn:ietf:params:jmap:submission': { maxDelayedSend: 30 * 24 * 60 * 60, submissionExtensions: ['FUTURERELEASE'] },
+      'urn:ietf:params:jmap:submission': { maxDelayedSend: 30 * 24 * 60 * 60, submissionExtensions: { FUTURERELEASE: true } },
       'urn:ietf:params:jmap:vacationresponse': {},
       'urn:ietf:params:jmap:contacts': {},
       'urn:ietf:params:jmap:calendars': {},

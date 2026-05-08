@@ -47,6 +47,7 @@ export interface Email {
   emailSubmissionId?: string;
   scheduledIdentityId?: string;
   scheduledUndoStatus?: 'pending' | 'final' | 'canceled';
+  scheduledDeliveryStatus?: Record<string, DeliveryStatus>;
   isScheduled?: boolean;
   isSmimeScheduled?: boolean;
 }
@@ -64,6 +65,7 @@ export interface ScheduledEmail extends Email {
   emailSubmissionId: string;
   scheduledIdentityId: string;
   scheduledUndoStatus: 'pending' | 'final' | 'canceled';
+  scheduledDeliveryStatus?: Record<string, DeliveryStatus>;
   isScheduled: true;
   isSmimeScheduled: boolean;
 }

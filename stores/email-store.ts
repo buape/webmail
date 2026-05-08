@@ -18,6 +18,8 @@ type ScheduledSubmissionMetadata = {
   undoStatus: 'pending' | 'final' | 'canceled';
 };
 
+const VIRTUAL_SCHEDULED_MAILBOX_ID = '__scheduled__';
+
 type PendingUndoSend = { submissionId: string; emailId?: string; sendAt: string; isSmime: boolean };
 
 interface EmailStore {
@@ -400,7 +402,8 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // Auto-select inbox if no mailbox is selected or the current selection
       // doesn't exist in the fetched list (e.g. after an account switch)
       const currentSelectedMailbox = get().selectedMailbox;
-      const selectionValid = currentSelectedMailbox && mailboxes.some(m => m.id === currentSelectedMailbox);
+      const selectionValid = currentSelectedMailbox === VIRTUAL_SCHEDULED_MAILBOX_ID
+        || (currentSelectedMailbox && mailboxes.some(m => m.id === currentSelectedMailbox));
       const loadingPatch = isInitialLoad ? { isLoading: false } : {};
       if (!selectionValid) {
         // Find inbox from PRIMARY account (not shared accounts)
@@ -425,6 +428,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     set({ isLoading: true, error: null }); // Keep previous emails visible during transition
     try {
       const targetMailboxId = mailboxId || get().selectedMailbox;
+      if (targetMailboxId === VIRTUAL_SCHEDULED_MAILBOX_ID) {
+        set({ isLoading: false, emails: [], hasMoreEmails: false, totalEmails: 0 });
+        await get().fetchScheduledEmails(client);
+        return;
+      }
 
       // Find the mailbox to get its accountId (for shared folder support)
       const mailboxes = get().mailboxes;
@@ -511,6 +519,12 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
 
     set({ isLoadingMore: true, error: null });
     try {
+      if (selectedMailbox === VIRTUAL_SCHEDULED_MAILBOX_ID) {
+        set({ isLoadingMore: false });
+        await get().loadMoreScheduledEmails(client);
+        return;
+      }
+
       // Get emails per page from settings
       const emailsPerPage = useSettingsStore.getState().emailsPerPage;
 
@@ -1678,6 +1692,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     // Only refresh if a mailbox is currently selected
     if (!selectedMailbox) return;
 
+    if (selectedMailbox === VIRTUAL_SCHEDULED_MAILBOX_ID) {
+      await get().fetchScheduledEmails(client);
+      return;
+    }
+
     try {
       // Fetch emails for the current mailbox without clearing the list first
       // This provides a smoother update experience
@@ -2040,7 +2059,10 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     });
   },
 
-  setScheduledView: (isScheduledView) => set({ isScheduledView }),
+  setScheduledView: (isScheduledView) => set(state => ({
+    isScheduledView,
+    selectedMailbox: isScheduledView ? VIRTUAL_SCHEDULED_MAILBOX_ID : state.selectedMailbox,
+  })),
   clearPendingUndoSend: () => set({ pendingUndoSend: null }),
 
   fetchScheduledEmails: async (client) => {

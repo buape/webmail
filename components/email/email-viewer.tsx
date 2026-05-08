@@ -871,6 +871,7 @@ export function EmailViewer({
   // Detect if the email is a draft
   const isDraft = email?.keywords?.['$draft'] === true;
   const isScheduled = email?.isScheduled === true;
+  const canCancelScheduled = isScheduled && email?.scheduledUndoStatus === 'pending';
 
   // Color options for email tags (from user-defined keyword settings)
   const colorOptions = emailKeywords.map((kw) => ({
@@ -3137,7 +3138,7 @@ export function EmailViewer({
             <ChevronLeft className="w-5 h-5" />
           </Button>
         )}
-        {isScheduled && (
+        {isScheduled && canCancelScheduled && (
           <>
             <Button variant="default" size="sm" onClick={onCancelScheduled} className="sm:flex sm:h-8" title={t('cancel_scheduled_send')}>
               <X className="w-4 h-4" />
@@ -4593,20 +4594,24 @@ export function EmailViewer({
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={onCancelScheduled}>{t('cancel_scheduled_send')}</Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    const delayedUntil = promptForRescheduleDelayedUntil();
-                    if (delayedUntil) onRescheduleScheduled?.(delayedUntil);
-                  }}
-                >
-                  {t('reschedule_send')}
-                </Button>
-                <Button size="sm" variant="outline" onClick={onCancelScheduledForEdit}>
-                  {email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
-                </Button>
+                {canCancelScheduled && (
+                  <>
+                    <Button size="sm" variant="outline" onClick={onCancelScheduled}>{t('cancel_scheduled_send')}</Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        const delayedUntil = promptForRescheduleDelayedUntil();
+                        if (delayedUntil) onRescheduleScheduled?.(delayedUntil);
+                      }}
+                    >
+                      {t('reschedule_send')}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={onCancelScheduledForEdit}>
+                      {email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           </div>

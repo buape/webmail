@@ -337,26 +337,22 @@ function sanitizeIdentityDisplayName(name: string | undefined | null): string {
   return name.replace(/\s*<[^>]*>\s*$/, '').trim();
 }
 
-function formatHoldUntil(delayedUntil: string): string {
-  const date = new Date(delayedUntil);
-  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const pad = (value: number) => String(value).padStart(2, '0');
-
-  return `${weekdays[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${months[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +0000`;
-}
-
-function createDelayedSubmissionEnvelope(fromEmail: string, delayedUntil?: string): Record<string, unknown> | undefined {
-  if (!delayedUntil) return undefined;
+function createDelayedSubmissionEnvelope(fromEmail: string, holdForSeconds?: number): Record<string, unknown> | undefined {
+  if (!holdForSeconds) return undefined;
   return {
     mailFrom: {
       email: fromEmail,
       parameters: {
-        HOLDUNTIL: formatHoldUntil(delayedUntil),
+        HOLDFOR: String(holdForSeconds),
       },
     },
   };
 }
+
+type SubmissionCapability = {
+  maxDelayedSend?: number;
+  submissionExtensions?: unknown;
+};
 
 export class JMAPClient implements IJMAPClient {
   private static readonly RATE_LIMIT_TOAST_THROTTLE_MS = 10_000;
@@ -2105,7 +2101,7 @@ export class JMAPClient implements IJMAPClient {
     references?: string[],
     delayedUntil?: string
   ): Promise<SendEmailResult> {
-    if (delayedUntil) this.validateDelayedUntil(delayedUntil);
+    const holdForSeconds = delayedUntil ? this.validateDelayedUntil(delayedUntil) : undefined;
     const emailId = `send-${Date.now()}`;
     const mailboxes = await this.getMailboxes();
     const sentMailbox = mailboxes.find(mb => mb.role === 'sent');
@@ -2213,10 +2209,10 @@ export class JMAPClient implements IJMAPClient {
       const submissionCreate = {
         emailId: `#${emailId}`,
         identityId: finalIdentityId,
-        ...(delayedUntil ? { envelope: createDelayedSubmissionEnvelope(fromEmail || this.username, delayedUntil) } : {}),
+        ...(holdForSeconds ? { envelope: createDelayedSubmissionEnvelope(fromEmail || this.username, holdForSeconds) } : {}),
       };
       methodCalls.push(["EmailSubmission/set", {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: { "1": submissionCreate },
         onSuccessUpdateEmail,
       }, "2"]);
@@ -2228,10 +2224,10 @@ export class JMAPClient implements IJMAPClient {
       const submissionCreate = {
         emailId: `#${emailId}`,
         identityId: finalIdentityId,
-        ...(delayedUntil ? { envelope: createDelayedSubmissionEnvelope(fromEmail || this.username, delayedUntil) } : {}),
+        ...(holdForSeconds ? { envelope: createDelayedSubmissionEnvelope(fromEmail || this.username, holdForSeconds) } : {}),
       };
       methodCalls.push(["EmailSubmission/set", {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: { "1": submissionCreate },
         onSuccessUpdateEmail,
       }, "1"]);
@@ -2435,7 +2431,7 @@ export class JMAPClient implements IJMAPClient {
         create: { [emailId]: emailCreate },
       }, "0"],
       ["EmailSubmission/set", {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: { "sub-1": { emailId: `#${emailId}`, identityId: finalIdentityId } },
         onSuccessUpdateEmail: {
           "#sub-1": {
@@ -2613,7 +2609,7 @@ export class JMAPClient implements IJMAPClient {
         create: { [emailId]: emailCreate },
       }, "0"],
       ["EmailSubmission/set", {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: { "sub-1": { emailId: `#${emailId}`, identityId } },
         onSuccessUpdateEmail: {
           "#sub-1": {
@@ -2765,7 +2761,7 @@ export class JMAPClient implements IJMAPClient {
         create: { [emailId]: emailCreate },
       }, "0"],
       ["EmailSubmission/set", {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: { "sub-1": { emailId: `#${emailId}`, identityId } },
         onSuccessUpdateEmail: {
           "#sub-1": {
@@ -2902,27 +2898,21 @@ export class JMAPClient implements IJMAPClient {
   }
 
   getMaxDelayedSend(accountId?: string): number {
-    const id = accountId || this.accountId;
-    const accountCapability = this.session?.accounts?.[id]?.accountCapabilities?.["urn:ietf:params:jmap:submission"] as { maxDelayedSend?: number } | undefined;
-    const sessionCapability = this.session?.capabilities?.["urn:ietf:params:jmap:submission"] as { maxDelayedSend?: number } | undefined;
-    const maxDelayedSend = accountCapability?.maxDelayedSend ?? sessionCapability?.maxDelayedSend;
+    const maxDelayedSend = this.getSubmissionCapability(accountId)?.maxDelayedSend;
     return typeof maxDelayedSend === 'number' ? maxDelayedSend : 0;
   }
 
   hasDelayedSend(accountId?: string): boolean {
-    const id = accountId || this.accountId;
-    const accountCapability = this.session?.accounts?.[id]?.accountCapabilities?.["urn:ietf:params:jmap:submission"] as { submissionExtensions?: unknown } | undefined;
-    const sessionCapability = this.session?.capabilities?.["urn:ietf:params:jmap:submission"] as { submissionExtensions?: unknown } | undefined;
-    const submissionExtensions = accountCapability?.submissionExtensions ?? sessionCapability?.submissionExtensions;
-    const hasFutureRelease = Array.isArray(submissionExtensions)
-      && submissionExtensions.some(extension => typeof extension === 'string' && extension.toUpperCase() === 'FUTURERELEASE');
+    const submissionCapability = this.getSubmissionCapability(accountId);
+    const submissionExtensions = submissionCapability?.submissionExtensions;
+    const hasFutureRelease = this.hasSubmissionExtension(submissionExtensions, 'FUTURERELEASE');
 
-    return this.supportsEmailSubmission()
+    return !!submissionCapability
       && hasFutureRelease
-      && this.getMaxDelayedSend(id) > 0;
+      && this.getMaxDelayedSend(accountId) > 0;
   }
 
-  private validateDelayedUntil(delayedUntil: string, accountId?: string): void {
+  private validateDelayedUntil(delayedUntil: string, accountId?: string): number {
     const time = new Date(delayedUntil).getTime();
     if (!Number.isFinite(time)) {
       throw new Error('Scheduled send time is invalid');
@@ -2938,18 +2928,40 @@ export class JMAPClient implements IJMAPClient {
     if (time > now + maxDelayedSend * 1000) {
       throw new Error('Scheduled send time is later than the server allows');
     }
+    return Math.ceil((time - now) / 1000);
   }
 
   private async getEmailSubmissionSendAt(submissionId: string): Promise<string | undefined> {
     const response = await this.request([
       ['EmailSubmission/get', {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         ids: [submissionId],
         properties: ['sendAt', 'undoStatus'],
       }, '0'],
     ]);
     const submission = response.methodResponses?.[0]?.[1]?.list?.[0] as { sendAt?: string } | undefined;
     return submission?.sendAt;
+  }
+
+  private getSubmissionAccountId(accountId?: string): string {
+    return accountId || this.session?.primaryAccounts?.['urn:ietf:params:jmap:submission'] || this.accountId;
+  }
+
+  private getSubmissionCapability(accountId?: string): SubmissionCapability | undefined {
+    const submissionAccountId = this.getSubmissionAccountId(accountId);
+    return this.session?.accounts?.[submissionAccountId]?.accountCapabilities?.['urn:ietf:params:jmap:submission'] as SubmissionCapability | undefined;
+  }
+
+  private hasSubmissionExtension(submissionExtensions: unknown, extension: string): boolean {
+    const target = extension.toUpperCase();
+    if (Array.isArray(submissionExtensions)) {
+      return submissionExtensions.some(item => typeof item === 'string' && item.toUpperCase() === target);
+    }
+    if (submissionExtensions && typeof submissionExtensions === 'object') {
+      return Object.entries(submissionExtensions as Record<string, unknown>)
+        .some(([key, value]) => key.toUpperCase() === target && value !== false && value != null);
+    }
+    return false;
   }
 
   getEventSourceUrl(): string | null {
@@ -5397,7 +5409,7 @@ export class JMAPClient implements IJMAPClient {
   async submitEmail(emailId: string, identityId: string): Promise<void> {
     const response = await this.request([
       ['EmailSubmission/set', {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: { 'smime-submit': { emailId, identityId } },
       }, '0'],
     ]);
@@ -5420,7 +5432,7 @@ export class JMAPClient implements IJMAPClient {
     draftMailboxId?: string,
     delayedUntil?: string,
   ): Promise<SendEmailResult> {
-    if (delayedUntil) this.validateDelayedUntil(delayedUntil);
+    const holdForSeconds = delayedUntil ? this.validateDelayedUntil(delayedUntil) : undefined;
     // Upload the raw message
     const file = new File([blob], 'message.eml', { type: 'message/rfc822' });
     const { blobId } = await this.uploadBlob(file);
@@ -5430,7 +5442,7 @@ export class JMAPClient implements IJMAPClient {
     const importMailboxId = draftMailboxId || sentMailboxId;
     const identities = await this.getIdentities();
     const identity = identities.find(item => item.id === identityId);
-    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, delayedUntil);
+    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, holdForSeconds);
 
     const methodCalls: [string, Record<string, unknown>, string][] = [
       ['Email/import', {
@@ -5444,7 +5456,7 @@ export class JMAPClient implements IJMAPClient {
         },
       }, '0'],
       ['EmailSubmission/set', {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: {
           'raw-submit': {
             emailId: '#raw-import',
@@ -5505,9 +5517,7 @@ export class JMAPClient implements IJMAPClient {
 
     const queryResponse = await this.request([
       ['EmailSubmission/query', {
-        accountId: this.accountId,
-        filter: { undoStatus: 'pending' },
-        sort: [{ property: 'sendAt', isAscending: true }],
+        accountId: this.getSubmissionAccountId(),
         limit,
         position,
       }, '0'],
@@ -5521,13 +5531,18 @@ export class JMAPClient implements IJMAPClient {
 
     const submissionResponse = await this.request([
       ['EmailSubmission/get', {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         ids,
-        properties: ['id', 'emailId', 'identityId', 'sendAt', 'undoStatus'],
+        properties: ['id', 'emailId', 'identityId', 'threadId', 'sendAt', 'undoStatus', 'deliveryStatus'],
       }, '0'],
     ]);
+    const now = Date.now();
     const submissions = ((submissionResponse.methodResponses?.[0]?.[1]?.list ?? []) as EmailSubmission[])
-      .filter(submission => submission.sendAt && Number.isFinite(new Date(submission.sendAt).getTime()));
+      .filter(submission => {
+        if (!submission.sendAt) return false;
+        const sendAtTime = new Date(submission.sendAt).getTime();
+        return Number.isFinite(sendAtTime) && sendAtTime > now;
+      });
 
     if (submissions.length === 0) {
       return { emails: [], hasMore: false, total: query?.total ?? 0 };
@@ -5556,10 +5571,12 @@ export class JMAPClient implements IJMAPClient {
         if (!email || !submission.sendAt) return null;
         return {
           ...email,
+          threadId: submission.threadId || email.threadId,
           scheduledSendAt: submission.sendAt,
           emailSubmissionId: submission.id,
           scheduledIdentityId: submission.identityId,
           scheduledUndoStatus: submission.undoStatus,
+          scheduledDeliveryStatus: submission.deliveryStatus,
           isScheduled: true,
           isSmimeScheduled: isSmimeEmail(email),
         };
@@ -5574,7 +5591,7 @@ export class JMAPClient implements IJMAPClient {
   async cancelEmailSubmission(submissionId: string): Promise<void> {
     const response = await this.request([
       ['EmailSubmission/set', {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         update: { [submissionId]: { undoStatus: 'canceled' } },
       }, '0'],
     ]);
@@ -5586,16 +5603,16 @@ export class JMAPClient implements IJMAPClient {
   }
 
   async rescheduleEmailSubmission(submissionId: string, emailId: string, identityId: string, delayedUntil: string): Promise<SendEmailResult> {
-    this.validateDelayedUntil(delayedUntil);
+    const holdForSeconds = this.validateDelayedUntil(delayedUntil);
     const mailboxes = await this.getMailboxes();
     const draftsMailbox = mailboxes.find(mb => mb.role === 'drafts');
     const sentMailbox = mailboxes.find(mb => mb.role === 'sent');
     const identities = await this.getIdentities();
     const identity = identities.find(item => item.id === identityId);
-    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, delayedUntil);
+    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, holdForSeconds);
     const response = await this.request([
       ['EmailSubmission/set', {
-        accountId: this.accountId,
+        accountId: this.getSubmissionAccountId(),
         create: { replacement: { emailId, identityId, ...(envelope ? { envelope } : {}) } },
         ...(draftsMailbox && sentMailbox ? {
           onSuccessUpdateEmail: {

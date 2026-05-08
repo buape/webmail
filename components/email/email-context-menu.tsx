@@ -152,6 +152,7 @@ export function EmailContextMenu({
   const showBatchActions = isMultiSelect && selectedCount > 1;
   const isInJunkFolder = currentMailboxRole === 'junk';
   const isScheduled = email.isScheduled === true;
+  const canCancelScheduled = isScheduled && email.scheduledUndoStatus === 'pending';
 
   // Build color options from keyword definitions in settings
   const colorOptions = emailKeywords.map((kw) => ({
@@ -205,7 +206,7 @@ export function EmailContextMenu({
         </ContextMenuHeader>
       )}
 
-      {isScheduled && !showBatchActions && (
+      {isScheduled && !showBatchActions && canCancelScheduled && (
         <>
           <ContextMenuItem
             icon={CalendarClock}
@@ -228,7 +229,7 @@ export function EmailContextMenu({
         </>
       )}
 
-      {isScheduled && <ContextMenuSeparator />}
+      {canCancelScheduled && <ContextMenuSeparator />}
 
       {!isScheduled && (
         <>

@@ -1553,12 +1553,16 @@ function handleThreadGet(args: MethodArgs, callId: string): MethodResult {
 function handleEmailSubmissionSet(args: MethodArgs, callId: string): MethodResult {
   const created: Record<string, { id: string; sendAt?: string }> = {};
   const updated: Record<string, null> = {};
-  const create = args.create as Record<string, { emailId?: string; identityId?: string; envelope?: { mailFrom?: { parameters?: { HOLDUNTIL?: string } } } }> | undefined;
+  const create = args.create as Record<string, { emailId?: string; identityId?: string; envelope?: { mailFrom?: { parameters?: { HOLDFOR?: string; HOLDUNTIL?: string } } } }> | undefined;
   if (create) {
     for (const [key, value] of Object.entries(create)) {
       const id = `submission-${Date.now()}-${key}`;
+      const holdFor = value.envelope?.mailFrom?.parameters?.HOLDFOR;
       const holdUntil = value.envelope?.mailFrom?.parameters?.HOLDUNTIL;
-      const holdUntilTime = holdUntil ? new Date(holdUntil).getTime() : Number.NaN;
+      const holdForSeconds = holdFor ? Number(holdFor) : Number.NaN;
+      const holdUntilTime = Number.isFinite(holdForSeconds) && holdForSeconds > 0
+        ? Date.now() + holdForSeconds * 1000
+        : holdUntil ? new Date(holdUntil).getTime() : Number.NaN;
       const delayedUntil = Number.isFinite(holdUntilTime) ? new Date(holdUntilTime).toISOString() : undefined;
       created[key] = { id, ...(delayedUntil ? { sendAt: delayedUntil } : {}) };
       if (delayedUntil && value.emailId && value.identityId) {
@@ -1583,8 +1587,8 @@ function handleEmailSubmissionSet(args: MethodArgs, callId: string): MethodResul
 function handleEmailSubmissionQuery(args: MethodArgs, callId: string): MethodResult {
   const position = Number(args.position || 0);
   const limit = Number(args.limit || 50);
-  const pending = scheduledSubmissions.filter(s => s.undoStatus === 'pending').sort((a, b) => new Date(a.sendAt).getTime() - new Date(b.sendAt).getTime());
-  return ['EmailSubmission/query', { accountId: ACCOUNT_ID, queryState: nextState(), ids: pending.slice(position, position + limit).map(s => s.id), total: pending.length, position, canCalculateChanges: false }, callId];
+  const submissions = [...scheduledSubmissions].sort((a, b) => new Date(a.sendAt).getTime() - new Date(b.sendAt).getTime());
+  return ['EmailSubmission/query', { accountId: ACCOUNT_ID, queryState: nextState(), ids: submissions.slice(position, position + limit).map(s => s.id), total: submissions.length, position, canCalculateChanges: false }, callId];
 }
 
 function handleEmailSubmissionGet(args: MethodArgs, callId: string): MethodResult {

@@ -505,30 +505,39 @@ export function EmailList({
                     />
                     {isScheduledView && thread.latestEmail.isScheduled && (
                       <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/10 px-4 py-2 text-xs">
+                        {thread.latestEmail.scheduledUndoStatus && thread.latestEmail.scheduledUndoStatus !== 'pending' && (
+                          <span className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
+                            {thread.latestEmail.scheduledUndoStatus}
+                          </span>
+                        )}
                         <span className="flex items-center gap-1 text-muted-foreground">
                           <CalendarClock className="w-3.5 h-3.5" />
                           {new Date(thread.latestEmail.scheduledSendAt || '').toLocaleString()}
                         </span>
-                        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => onCancelScheduled?.(thread.latestEmail)}>
-                          <XCircle className="w-3.5 h-3.5 mr-1" />
-                          {t('cancel_scheduled_send')}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 px-2"
-                          onClick={() => {
-                            const delayedUntil = promptForRescheduleDelayedUntil();
-                            if (delayedUntil) onRescheduleScheduled?.(thread.latestEmail, delayedUntil);
-                          }}
-                        >
-                          <CalendarClock className="w-3.5 h-3.5 mr-1" />
-                          {t('reschedule_send')}
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => onCancelScheduledForEdit?.(thread.latestEmail)}>
-                          <Edit3 className="w-3.5 h-3.5 mr-1" />
-                          {thread.latestEmail.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
-                        </Button>
+                        {thread.latestEmail.scheduledUndoStatus === 'pending' && (
+                          <>
+                            <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => onCancelScheduled?.(thread.latestEmail)}>
+                              <XCircle className="w-3.5 h-3.5 mr-1" />
+                              {t('cancel_scheduled_send')}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2"
+                              onClick={() => {
+                                const delayedUntil = promptForRescheduleDelayedUntil();
+                                if (delayedUntil) onRescheduleScheduled?.(thread.latestEmail, delayedUntil);
+                              }}
+                            >
+                              <CalendarClock className="w-3.5 h-3.5 mr-1" />
+                              {t('reschedule_send')}
+                            </Button>
+                            <Button variant="ghost" size="sm" className="h-7 px-2" onClick={() => onCancelScheduledForEdit?.(thread.latestEmail)}>
+                              <Edit3 className="w-3.5 h-3.5 mr-1" />
+                              {thread.latestEmail.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
+                            </Button>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
