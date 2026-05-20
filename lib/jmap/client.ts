@@ -5582,43 +5582,56 @@ export class JMAPClient implements IJMAPClient {
       return { emails: [], hasMore: false, total: 0 };
     }
 
-    const queryResponse = await this.request([
-      ['EmailSubmission/query', {
-        accountId: this.getSubmissionAccountId(),
-        limit,
-        position,
-      }, '0'],
-    ]);
-
-    const query = queryResponse.methodResponses?.[0]?.[1] as { ids?: string[]; total?: number; position?: number } | undefined;
-    const ids = query?.ids ?? [];
-    if (ids.length === 0) {
-      return { emails: [], hasMore: false, total: query?.total ?? 0 };
-    }
-
-    const submissionResponse = await this.request([
-      ['EmailSubmission/get', {
-        accountId: this.getSubmissionAccountId(),
-        ids,
-        properties: ['id', 'emailId', 'identityId', 'threadId', 'sendAt', 'undoStatus', 'deliveryStatus'],
-      }, '0'],
-    ]);
     const now = Date.now();
-    const submissions = ((submissionResponse.methodResponses?.[0]?.[1]?.list ?? []) as EmailSubmission[])
-      .filter(submission => {
-        if (!submission.sendAt) return false;
-        const sendAtTime = new Date(submission.sendAt).getTime();
-        return Number.isFinite(sendAtTime) && sendAtTime > now;
-      });
+    const pageSize = Math.max(limit, 50);
+    const submissions: EmailSubmission[] = [];
+    let rawPosition = 0;
+    let rawTotal = 0;
 
-    if (submissions.length === 0) {
-      return { emails: [], hasMore: false, total: query?.total ?? 0 };
+    do {
+      const queryResponse = await this.request([
+        ['EmailSubmission/query', {
+          accountId: this.getSubmissionAccountId(),
+          limit: pageSize,
+          position: rawPosition,
+        }, '0'],
+      ]);
+
+      const query = queryResponse.methodResponses?.[0]?.[1] as { ids?: string[]; total?: number; position?: number } | undefined;
+      const ids = query?.ids ?? [];
+      rawTotal = query?.total ?? rawPosition + ids.length;
+      if (ids.length === 0) break;
+
+      const submissionResponse = await this.request([
+        ['EmailSubmission/get', {
+          accountId: this.getSubmissionAccountId(),
+          ids,
+          properties: ['id', 'emailId', 'identityId', 'threadId', 'sendAt', 'undoStatus', 'deliveryStatus'],
+        }, '0'],
+      ]);
+
+      submissions.push(...((submissionResponse.methodResponses?.[0]?.[1]?.list ?? []) as EmailSubmission[])
+        .filter(submission => {
+          if (submission.undoStatus !== 'pending' || !submission.sendAt) return false;
+          const sendAtTime = new Date(submission.sendAt).getTime();
+          return Number.isFinite(sendAtTime) && sendAtTime > now;
+        }));
+
+      rawPosition += ids.length;
+    } while (rawPosition < rawTotal);
+
+    submissions.sort((a, b) => new Date(a.sendAt || '').getTime() - new Date(b.sendAt || '').getTime());
+    const total = submissions.length;
+    const pageSubmissions = submissions.slice(position, position + limit);
+
+    if (pageSubmissions.length === 0) {
+      return { emails: [], hasMore: false, total };
     }
 
     const emailResponse = await this.request([
       ['Email/get', {
         accountId: this.accountId,
-        ids: submissions.map(submission => submission.emailId),
+        ids: pageSubmissions.map(submission => submission.emailId),
         properties: [
           'id', 'threadId', 'mailboxIds', 'keywords', 'size', 'receivedAt', 'from', 'to', 'cc', 'bcc', 'replyTo',
           'subject', 'preview', 'textBody', 'htmlBody', 'bodyValues', 'attachments', 'hasAttachment', 'sentAt',
@@ -5632,7 +5645,7 @@ export class JMAPClient implements IJMAPClient {
     ]);
 
     const emailById = new Map(((emailResponse.methodResponses?.[0]?.[1]?.list ?? []) as Email[]).map(email => [email.id, email]));
-    const emails = submissions
+    const emails = pageSubmissions
       .map((submission): ScheduledEmail | null => {
         const email = emailById.get(submission.emailId);
         if (!email || !submission.sendAt) return null;
@@ -5651,8 +5664,7 @@ export class JMAPClient implements IJMAPClient {
       .filter((email): email is ScheduledEmail => email !== null)
       .sort((a, b) => new Date(a.scheduledSendAt).getTime() - new Date(b.scheduledSendAt).getTime());
 
-    const total = query?.total ?? emails.length;
-    return { emails, hasMore: computeHasMore(position, ids.length, total, limit), total };
+    return { emails, hasMore: position + emails.length < total, total };
   }
 
   async cancelEmailSubmission(submissionId: string): Promise<void> {

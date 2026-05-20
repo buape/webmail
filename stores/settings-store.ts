@@ -494,7 +494,6 @@ export const useSettingsStore = create<SettingsState>()(
           plainTextMode: state.plainTextMode,
           subAddressDelimiter: state.subAddressDelimiter,
           sendDelaySeconds: state.sendDelaySeconds,
-          sendDelaySeconds: state.sendDelaySeconds,
           signaturePosition: state.signaturePosition,
           signatureSeparatorEnabled: state.signatureSeparatorEnabled,
           sessionTimeout: state.sessionTimeout,

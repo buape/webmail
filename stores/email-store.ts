@@ -157,7 +157,7 @@ interface EmailStore {
 
   fetchScheduledEmails: (client: IJMAPClient) => Promise<void>;
   loadMoreScheduledEmails: (client: IJMAPClient) => Promise<void>;
-  cancelScheduledEmail: (client: IJMAPClient, submissionId: string) => Promise<void>;
+  cancelScheduledEmail: (client: IJMAPClient, submissionId: string, emailId?: string) => Promise<void>;
   cancelScheduledEmailForEdit: (client: IJMAPClient, email: ScheduledEmail | Email) => Promise<Email | null>;
   rescheduleScheduledEmail: (client: IJMAPClient, submissionId: string, emailId: string, identityId: string, delayedUntil: string) => Promise<SendEmailResult>;
   cancelUndoSend: (client: IJMAPClient, pending: PendingUndoSend) => Promise<Email | null>;
@@ -2182,8 +2182,11 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     }
   },
 
-  cancelScheduledEmail: async (client, submissionId) => {
+  cancelScheduledEmail: async (client, submissionId, emailId) => {
     await client.cancelEmailSubmission(submissionId);
+    if (emailId) {
+      await client.deleteEmail(emailId);
+    }
     if (get().pendingUndoSend?.submissionId === submissionId) {
       set({ pendingUndoSend: null });
     }

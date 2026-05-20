@@ -2593,7 +2593,7 @@ export default function Home() {
                 isScheduledView={isScheduledView}
                 onLoadMoreScheduled={() => client && loadMoreScheduledEmails(client)}
                 onCancelScheduled={async (email) => {
-                  if (client && email.emailSubmissionId) await cancelScheduledEmail(client, email.emailSubmissionId);
+                  if (client && email.emailSubmissionId) await cancelScheduledEmail(client, email.emailSubmissionId, email.id);
                 }}
                 onCancelScheduledForEdit={async (email) => {
                   if (!client) return;
@@ -2878,7 +2878,7 @@ export default function Home() {
                     onShowShortcuts={() => setShowShortcutsModal(true)}
                     onEditDraft={handleEditDraft}
                     onCancelScheduled={async () => {
-                      if (client && selectedEmail?.emailSubmissionId) await cancelScheduledEmail(client, selectedEmail.emailSubmissionId);
+                      if (client && selectedEmail?.emailSubmissionId) await cancelScheduledEmail(client, selectedEmail.emailSubmissionId, selectedEmail.id);
                     }}
                     onCancelScheduledForEdit={async () => {
                       if (!client || !selectedEmail) return;

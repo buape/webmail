@@ -1822,7 +1822,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           isReadOnly: false,
           accountCapabilities: {
             'urn:ietf:params:jmap:mail': {},
-            'urn:ietf:params:jmap:submission': { maxDelayedSend: 2592000 },
+            'urn:ietf:params:jmap:submission': { maxDelayedSend: 2592000, submissionExtensions: { FUTURERELEASE: true } },
             'urn:ietf:params:jmap:quota': {},
             'urn:ietf:params:jmap:vacationresponse': {},
             'urn:ietf:params:jmap:contacts': {},
