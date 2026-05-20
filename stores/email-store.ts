@@ -1753,6 +1753,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       }
 
       const currentEmails = get().emails;
+      const previousTotal = get().totalEmails;
 
       // Only notify for genuinely new incoming mail in the Inbox.
       // Without these guards the toast/sound also fires when sending,
@@ -1773,12 +1774,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       const refreshedEmails = annotateScheduledEmails(result.emails, get().scheduledSubmissionByEmailId);
 
       // Build the merged list: start with the fresh first page, then append
-      // existing emails beyond that page (if any), skipping duplicates and
-      // emails removed from the first page (e.g. deleted or moved).
+      // existing emails beyond that page (if any), skipping duplicates. Do not
+      // append the whole previous list: drafts are saved as destroy+create, so
+      // the old draft can disappear from the refreshed first page and must not
+      // be reintroduced from stale local state.
       const merged: Email[] = [...refreshedEmails];
       const mergedIds = new Set(refreshedEmails.map((e: Email) => e.id));
+      const insertedCount = Math.max((result.total || 0) - previousTotal, 0);
+      const appendFromIndex = Math.max(refreshedEmails.length - insertedCount, 0);
 
-      for (const email of currentEmails) {
+      for (const email of currentEmails.slice(appendFromIndex)) {
         if (!mergedIds.has(email.id)) {
           merged.push(email);
           mergedIds.add(email.id);
