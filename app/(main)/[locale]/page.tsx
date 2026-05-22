@@ -110,6 +110,7 @@ export default function Home() {
   const [isProtocolAccountSwitching, setIsProtocolAccountSwitching] = useState(false);
   const markAsReadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastUndoToastSubmissionRef = useRef<string | null>(null);
+  const initialMailLoadClientRef = useRef<object | null>(null);
   const { isAuthenticated, client, logout, checkAuth, switchAccount, activeAccountId, isLoading: authLoading, connectionLost, isRateLimited, rateLimitUntil } = useAuthStore();
   const { identities } = useIdentityStore();
   useIdentitySync();
@@ -914,53 +915,61 @@ export default function Home() {
   }, [isAuthenticated, client, handleMailtoProtocolRequest]);
 
   // Fallback fetch for paths that didn't go through login()'s prefetch
-  // (notably checkAuth on page refresh). The prefetch in auth-store/login()
-  // populates mailboxes before this effect first runs, so on the post-login
-  // path this block is a no-op.
+  // (notably checkAuth on page refresh). Settings pages can also prefill
+  // mailboxes without emails, so bootstrap emails once per client when the
+  // mail route mounts even if mailbox data is already present.
   useEffect(() => {
-    if (isAuthenticated && client && mailboxes.length === 0) {
-      let retryTimer: ReturnType<typeof setTimeout> | null = null;
-      let cancelled = false;
-
-      const loadData = async (attempt = 1) => {
-        try {
-          await Promise.all([
-            fetchMailboxes(client),
-            fetchQuota(client)
-          ]);
-
-          const state = useEmailStore.getState();
-          const selectedMailboxId = state.selectedMailbox;
-
-          if (state.mailboxes.length === 0 && attempt <= 5 && !cancelled) {
-            const delay = Math.min(1000 * attempt, 5000);
-            debug.log('jmap', `[Mailbox] No mailboxes returned (attempt ${attempt}), retrying in ${delay}ms`);
-            retryTimer = setTimeout(() => loadData(attempt + 1), delay);
-            return;
-          }
-
-          await refreshScheduledMetadata(client);
-
-          // Fetch emails for the selected mailbox after scheduled metadata is available.
-          if (selectedMailboxId) {
-            await fetchEmails(client, selectedMailboxId);
-          } else {
-            await fetchEmails(client);
-          }
-
-          fetchTagCounts(client);
-        } catch (error) {
-          console.error('Error loading email data:', error);
-        }
-      };
-      loadData();
-
-      return () => {
-        cancelled = true;
-        if (retryTimer) clearTimeout(retryTimer);
-      };
+    if (!isAuthenticated || !client) {
+      initialMailLoadClientRef.current = null;
+      return;
     }
-  }, [isAuthenticated, client, mailboxes.length, fetchMailboxes, fetchEmails, fetchQuota, fetchTagCounts, refreshScheduledMetadata]);
+
+    if (initialMailLoadClientRef.current === client) return;
+    initialMailLoadClientRef.current = client;
+
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+
+    const loadData = async (attempt = 1) => {
+      try {
+        const needsMailboxes = useEmailStore.getState().mailboxes.length === 0;
+        await Promise.all([
+          needsMailboxes ? fetchMailboxes(client) : Promise.resolve(),
+          fetchQuota(client)
+        ]);
+
+        const state = useEmailStore.getState();
+        const selectedMailboxId = state.selectedMailbox;
+
+        if (state.mailboxes.length === 0 && attempt <= 5 && !cancelled) {
+          const delay = Math.min(1000 * attempt, 5000);
+          debug.log('jmap', `[Mailbox] No mailboxes returned (attempt ${attempt}), retrying in ${delay}ms`);
+          retryTimer = setTimeout(() => loadData(attempt + 1), delay);
+          return;
+        }
+
+        await refreshScheduledMetadata(client);
+
+        // Fetch emails for the selected mailbox after scheduled metadata is available.
+        if (selectedMailboxId) {
+          await fetchEmails(client, selectedMailboxId);
+        } else {
+          await fetchEmails(client);
+        }
+
+        fetchTagCounts(client);
+      } catch (error) {
+        console.error('Error loading email data:', error);
+        initialMailLoadClientRef.current = null;
+      }
+    };
+    loadData();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [isAuthenticated, client, fetchMailboxes, fetchEmails, fetchQuota, fetchTagCounts, refreshScheduledMetadata]);
 
   // Push notifications: set up once per client and tear down when the client
   // goes away (logout or account switch). Kept separate from the fetch effect
