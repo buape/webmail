@@ -2661,6 +2661,11 @@ function RecipientChipInput({
           aria-controls={activeAutoField === field ? `autocomplete-${field}` : undefined}
           aria-activedescendant={activeAutoField === field && autoSelectedIndex >= 0 ? `autocomplete-option-${autoSelectedIndex}` : undefined}
           aria-invalid={validationError || undefined}
+          data-bwignore="true"
+          data-1p-ignore
+          data-op-ignore
+          data-lpignore="true"
+          data-form-type="other"
         />
       </div>
       {validationError && validationMessage && (
