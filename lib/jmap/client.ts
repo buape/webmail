@@ -5617,9 +5617,9 @@ export class JMAPClient implements IJMAPClient {
       : { scheduled: false, emailId, emailSubmissionId, isSmime: true };
   }
 
-  async getScheduledEmails(limit = 50, position = 0): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number }> {
+  async getScheduledEmails(limit = 50, position = 0): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number; nextPosition: number }> {
     if (!this.hasDelayedSend()) {
-      return { emails: [], hasMore: false, total: 0 };
+      return { emails: [], hasMore: false, total: 0, nextPosition: position };
     }
 
     const now = Date.now();
@@ -5663,9 +5663,10 @@ export class JMAPClient implements IJMAPClient {
     submissions.sort((a, b) => new Date(a.sendAt || '').getTime() - new Date(b.sendAt || '').getTime());
     const total = submissions.length;
     const pageSubmissions = submissions.slice(position, position + limit);
+    const nextPosition = position + pageSubmissions.length;
 
     if (pageSubmissions.length === 0) {
-      return { emails: [], hasMore: false, total };
+      return { emails: [], hasMore: false, total, nextPosition };
     }
 
     const emailResponse = await this.request([
@@ -5704,7 +5705,7 @@ export class JMAPClient implements IJMAPClient {
       .filter((email): email is ScheduledEmail => email !== null)
       .sort((a, b) => new Date(a.scheduledSendAt).getTime() - new Date(b.scheduledSendAt).getTime());
 
-    return { emails, hasMore: position + emails.length < total, total };
+    return { emails, hasMore: nextPosition < total, total, nextPosition };
   }
 
   async cancelEmailSubmission(submissionId: string): Promise<void> {

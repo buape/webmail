@@ -84,6 +84,7 @@ interface EmailStore {
   scheduledSubmissionByEmailId: Map<string, ScheduledSubmissionMetadata>;
   scheduledTotal: number;
   scheduledHasMore: boolean;
+  scheduledNextPosition: number;
   isLoadingScheduled: boolean;
   isScheduledView: boolean;
   pendingUndoSend: PendingUndoSend | null;
@@ -456,6 +457,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
   scheduledSubmissionByEmailId: new Map(),
   scheduledTotal: 0,
   scheduledHasMore: false,
+  scheduledNextPosition: 0,
   isLoadingScheduled: false,
   isScheduledView: false,
   pendingUndoSend: null,
@@ -2530,6 +2532,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         scheduledSubmissionByEmailId,
         scheduledTotal: result.total,
         scheduledHasMore: result.hasMore,
+        scheduledNextPosition: result.nextPosition,
         isLoadingScheduled: false,
         pendingUndoSend: shouldClearPendingUndoSend(pendingUndoSend, result.emails) ? null : pendingUndoSend,
       });
@@ -2542,18 +2545,19 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         scheduledSubmissionByEmailId: new Map(),
         scheduledTotal: 0,
         scheduledHasMore: false,
+        scheduledNextPosition: 0,
         isLoadingScheduled: false,
       });
     }
   },
 
   loadMoreScheduledEmails: async (client) => {
-    const { isLoadingScheduled, scheduledHasMore, scheduledEmails } = get();
+    const { isLoadingScheduled, scheduledHasMore, scheduledEmails, scheduledNextPosition } = get();
     if (isLoadingScheduled || !scheduledHasMore) return;
     set({ isLoadingScheduled: true, error: null });
     try {
       const emailsPerPage = useSettingsStore.getState().emailsPerPage;
-      const result = await client.getScheduledEmails(emailsPerPage, scheduledEmails.length);
+      const result = await client.getScheduledEmails(emailsPerPage, scheduledNextPosition);
       const merged = [...scheduledEmails, ...result.emails.filter(email => !scheduledEmails.some(existing => existing.id === email.id))];
       const pendingUndoSend = get().pendingUndoSend;
       set({
@@ -2567,6 +2571,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         }])),
         scheduledTotal: result.total,
         scheduledHasMore: result.hasMore,
+        scheduledNextPosition: result.nextPosition,
         isLoadingScheduled: false,
         pendingUndoSend: shouldClearPendingUndoSend(pendingUndoSend, merged) ? null : pendingUndoSend,
       });
@@ -2577,20 +2582,32 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
 
   refreshScheduledMetadata: async (client) => {
     try {
-      const result = await client.getScheduledEmails(useSettingsStore.getState().emailsPerPage, 0);
+      const emailsPerPage = useSettingsStore.getState().emailsPerPage;
+      const allEmails: ScheduledEmail[] = [];
+      let position = 0;
+      let hasMore = true;
+      let total = 0;
+      while (hasMore) {
+        const page = await client.getScheduledEmails(emailsPerPage, position);
+        allEmails.push(...page.emails.filter(email => !allEmails.some(existing => existing.id === email.id)));
+        total = page.total;
+        hasMore = page.hasMore && page.nextPosition > position;
+        position = page.nextPosition;
+      }
       const pendingUndoSend = get().pendingUndoSend;
       set({
-        scheduledEmails: get().isScheduledView ? result.emails : get().scheduledEmails,
-        scheduledEmailIds: new Set(result.emails.map(email => email.id)),
-        scheduledSubmissionByEmailId: new Map(result.emails.map(email => [email.id, {
+        scheduledEmails: get().isScheduledView ? allEmails : get().scheduledEmails,
+        scheduledEmailIds: new Set(allEmails.map(email => email.id)),
+        scheduledSubmissionByEmailId: new Map(allEmails.map(email => [email.id, {
           submissionId: email.emailSubmissionId,
           sendAt: email.scheduledSendAt,
           identityId: email.scheduledIdentityId,
           undoStatus: email.scheduledUndoStatus,
         }])),
-        scheduledTotal: result.total,
-        scheduledHasMore: result.hasMore,
-        pendingUndoSend: shouldClearPendingUndoSend(pendingUndoSend, result.emails) ? null : pendingUndoSend,
+        scheduledTotal: total,
+        scheduledHasMore: false,
+        scheduledNextPosition: position,
+        pendingUndoSend: shouldClearPendingUndoSend(pendingUndoSend, allEmails) ? null : pendingUndoSend,
       });
     } catch (error) {
       console.error('Failed to refresh scheduled metadata:', error);
@@ -2616,6 +2633,9 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     const submissionId = email.emailSubmissionId;
     if (!submissionId) return null;
     await client.cancelEmailSubmission(submissionId);
+    if (get().pendingUndoSend?.submissionId === submissionId) {
+      set({ pendingUndoSend: null });
+    }
     if (email.isSmimeScheduled) {
       await client.deleteEmail(email.id);
       set(state => ({

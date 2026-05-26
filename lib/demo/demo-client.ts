@@ -959,7 +959,7 @@ export class DemoJMAPClient implements IJMAPClient {
     return delayedUntil ? { scheduled: true, emailId, emailSubmissionId, sendAt: delayedUntil, isSmime: true } : { scheduled: false, emailId, isSmime: true };
   }
 
-  async getScheduledEmails(limit = 50, position = 0): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number }> {
+  async getScheduledEmails(limit = 50, position = 0): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number; nextPosition: number }> {
     const pending = Array.from(this.scheduledSubmissions.values())
       .filter(s => s.undoStatus === 'pending')
       .sort((a, b) => new Date(a.sendAt).getTime() - new Date(b.sendAt).getTime());
@@ -977,7 +977,8 @@ export class DemoJMAPClient implements IJMAPClient {
         isSmimeScheduled: submission.isSmime,
       } satisfies ScheduledEmail;
     }).filter((email): email is ScheduledEmail => email !== null);
-    return { emails, hasMore: position + emails.length < pending.length, total: pending.length };
+    const nextPosition = position + page.length;
+    return { emails, hasMore: nextPosition < pending.length, total: pending.length, nextPosition };
   }
 
   async cancelEmailSubmission(submissionId: string): Promise<void> {
