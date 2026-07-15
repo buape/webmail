@@ -1214,7 +1214,7 @@ export const useAuthStore = create<AuthState>()(
           }
           if (IS_LITE) unnamedLiteSlot = slot;
 
-          const { access_token, expires_in } = await tokenRes.json();
+          const { access_token, expires_in, avatar_url } = await tokenRes.json();
 
           const refreshFn = get().refreshAccessToken;
           const client = JMAPClient.withBearer(serverUrl, access_token, '', () => refreshFn());
@@ -1254,6 +1254,7 @@ export const useAuthStore = create<AuthState>()(
             rememberMe: true,
             displayName: primaryIdentity?.name || username,
             email: primaryIdentity?.email || username,
+            avatarUrl: typeof avatar_url === 'string' ? avatar_url : undefined,
             lastLoginAt: Date.now(),
             isConnected: true,
             hasError: false,
@@ -1360,7 +1361,7 @@ export const useAuthStore = create<AuthState>()(
             throw new Error(errorData.error || 'token_exchange_failed');
           }
 
-          const { access_token, expires_in } = await ssoRes.json();
+          const { access_token, expires_in, avatar_url } = await ssoRes.json();
 
           const ssoServerUrl = config.jmapServerUrl;
 
@@ -1399,6 +1400,7 @@ export const useAuthStore = create<AuthState>()(
             rememberMe: true,
             displayName: primaryIdentity?.name || username,
             email: primaryIdentity?.email || username,
+            avatarUrl: typeof avatar_url === 'string' ? avatar_url : undefined,
             lastLoginAt: Date.now(),
             isConnected: true,
             hasError: false,
