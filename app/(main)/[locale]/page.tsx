@@ -1220,6 +1220,7 @@ export default function Home() {
     fromName?: string;
     identityId?: string;
     envelopeMailFrom?: string;
+    localAccountId?: string;
     attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>;
     inReplyTo?: string[];
     references?: string[];
@@ -1232,7 +1233,11 @@ export default function Home() {
       const effectiveMode = pendingDraft?.mode ?? composerMode;
       const originalEmailId = selectedEmail?.id;
 
-      const result = await sendEmail(client, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references, data.delayedUntil, data.envelopeMailFrom, { requestReadReceipt: data.requestReadReceipt });
+      const sendClient = data.localAccountId
+        ? (useAuthStore.getState().getClientForAccount(data.localAccountId) ?? client)
+        : client;
+
+      const result = await sendEmail(sendClient, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references, data.delayedUntil, data.envelopeMailFrom, { requestReadReceipt: data.requestReadReceipt });
       setShowComposer(false);
       if (result.filingError) {
         // The mail went out, but a post-send step (filing to Sent /
@@ -1243,8 +1248,8 @@ export default function Home() {
         toastInstance.warning(t('email_composer.send_filing_warning'));
       }
       if (result.scheduled) {
-        await refreshScheduledMetadata(client);
-        if (isScheduledView) await fetchScheduledEmails(client);
+        await refreshScheduledMetadata(sendClient);
+        if (isScheduledView) await fetchScheduledEmails(sendClient);
         return;
       }
 
@@ -1269,7 +1274,7 @@ export default function Home() {
 
       // Refresh the current mailbox to update the UI
       if (!isScheduledView) {
-        await refreshCurrentMailbox(client);
+        await refreshCurrentMailbox(sendClient);
         // Re-fetch the replied thread's cross-folder data so the expanded
         // view shows the newly sent reply without collapsing.
         if (originalEmailId) {
@@ -1297,6 +1302,7 @@ export default function Home() {
       }
     } catch (error) {
       console.error("Failed to send email:", error);
+      throw error;
     }
   };
 
