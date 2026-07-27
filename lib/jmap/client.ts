@@ -2678,7 +2678,7 @@ export class JMAPClient implements IJMAPClient {
     if (draftId) {
       // Destroy the old draft and create a new email with the final body
       methodCalls.push(["Email/set", {
-        accountId: this.accountId,
+        accountId: targetAccountId,
         destroy: [draftId],
       }, "0"]);
       methodCalls.push(["Email/set", {
