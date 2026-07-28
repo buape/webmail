@@ -1351,7 +1351,7 @@ export function EmailComposer({
   }, [templatesEnabled]);
 
   const addFiles = useCallback(async (files: File[]) => {
-    if (!client || files.length === 0) return;
+    if (!composerClient || files.length === 0) return;
 
     // Let plugins veto each upload before it's queued.
     const allowedFiles: File[] = [];
@@ -1425,7 +1425,7 @@ export function EmailComposer({
         const newFile = await fileStorage.getFile(newFileId) || file;
         await fileStorage.deleteFile(newFileId);
 
-        const { blobId } = await client.uploadBlob(newFile);
+        const { blobId } = await composerClient.uploadBlob(newFile);
 
         if (controller?.signal.aborted) continue;
         setAttachments(prev =>
@@ -1455,12 +1455,12 @@ export function EmailComposer({
         );
       }
     }
-  }, [client, t, plainTextMode]);
+  }, [composerClient, t, plainTextMode]);
 
   const handleImageUpload = useCallback(async (
     file: File,
   ): Promise<{ src: string; cid: string } | null> => {
-    if (!client) return null;
+    if (!composerClient) return null;
     try {
       const readAsDataUrl = new Promise<string | null>((resolve) => {
         const reader = new FileReader();
@@ -1469,7 +1469,7 @@ export function EmailComposer({
         reader.readAsDataURL(file);
       });
       const [{ blobId }, dataUrl] = await Promise.all([
-        client.uploadBlob(file),
+        composerClient.uploadBlob(file),
         readAsDataUrl,
       ]);
       if (!dataUrl) throw new Error('Failed to read image as data URL');
@@ -1488,7 +1488,7 @@ export function EmailComposer({
       toast.error(t('upload_failed', { filename: file.name }));
       return null;
     }
-  }, [client, t]);
+  }, [composerClient, t]);
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     if (!event.target.files) return;

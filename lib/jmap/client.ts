@@ -2949,11 +2949,13 @@ export class JMAPClient implements IJMAPClient {
     envelopeMailFrom?: string,
     options?: { requestReadReceipt?: boolean }
   ): Promise<SendEmailResult> {
-    const holdForSeconds = delayedUntil ? this.validateDelayedUntil(delayedUntil) : undefined;
     const emailId = `send-${Date.now()}`;
     const targetAccountId = (fromEmail && Object.keys(this.accounts).find(id =>
       this.accounts[id]?.name?.toLowerCase() === fromEmail.toLowerCase()
     )) || this.accountId;
+    const submissionAccountId = this.getSubmissionAccountId(targetAccountId);
+    const holdForSeconds = delayedUntil ? this.validateDelayedUntil(delayedUntil, submissionAccountId) : undefined;
+
     const mboxResp = await this.request([
       ["Mailbox/get", { accountId: targetAccountId }, "0"]
     ]);
@@ -3104,7 +3106,7 @@ export class JMAPClient implements IJMAPClient {
       create: { [emailId]: emailCreate },
     }, "0"]);
     methodCalls.push(["EmailSubmission/set", {
-      accountId: this.getSubmissionAccountId(targetAccountId),
+      accountId: submissionAccountId,
       create: buildSubmissionCreate("1"),
       onSuccessUpdateEmail,
     }, "1"]);
@@ -4087,21 +4089,19 @@ export class JMAPClient implements IJMAPClient {
   }
 
   private getSubmissionAccountId(accountId?: string): string {
-    // The requested (mail) account may not host EmailSubmission objects — JMAP
-    // allows submission to live in a separate account (session
-    // primaryAccounts['…:submission']). Only honour the requested account when
-    // it actually advertises the submission capability; otherwise fall back to
-    // the account JMAP designates for submission.
-    const submissionPrimary = this.session?.primaryAccounts?.['urn:ietf:params:jmap:submission'];
-    if (accountId && this.session?.accounts?.[accountId]?.accountCapabilities?.['urn:ietf:params:jmap:submission']) {
-      return accountId;
-    }
-    return submissionPrimary || accountId || this.accountId;
+    // Stalwart resolves EmailSubmission emailId and identityId inside the
+    // submission account. For delegated/shared accounts that do not advertise
+    // the submission capability, using the session's primary submission account
+    // can submit an unrelated same-document-id message from the active account.
+    // Only use the session primary submission account for the active/default
+    // account; shared sends must stay scoped to the shared mail account.
+    if (accountId && accountId !== this.accountId) return accountId;
+    return this.session?.primaryAccounts?.['urn:ietf:params:jmap:submission'] || accountId || this.accountId;
   }
 
   private getSubmissionCapability(accountId?: string): SubmissionCapability | undefined {
-    const submissionAccountId = this.getSubmissionAccountId(accountId);
-    return this.session?.accounts?.[submissionAccountId]?.accountCapabilities?.['urn:ietf:params:jmap:submission'] as SubmissionCapability | undefined;
+    const targetAccountId = this.getSubmissionAccountId(accountId);
+    return this.session?.accounts?.[targetAccountId]?.accountCapabilities?.['urn:ietf:params:jmap:submission'] as SubmissionCapability | undefined;
   }
 
   private hasSubmissionExtension(submissionExtensions: unknown, extension: string): boolean {

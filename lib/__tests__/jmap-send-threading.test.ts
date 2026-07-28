@@ -201,6 +201,62 @@ describe('JMAPClient.sendEmail threading headers', () => {
     expect(captured[2].methodCalls[2][1].accountId).toBe('support');
   });
 
+  it('submits through the target shared account even when it does not advertise submission capability', async () => {
+    const client = createClient();
+    Object.assign(client, {
+      accounts: {
+        'account-1': { name: 'user@example.com', accountCapabilities: { 'urn:ietf:params:jmap:mail': {}, 'urn:ietf:params:jmap:submission': {} } },
+        support: { name: 'support@example.com', accountCapabilities: { 'urn:ietf:params:jmap:mail': {} } },
+      },
+      session: {
+        accounts: {
+          'account-1': { name: 'user@example.com', accountCapabilities: { 'urn:ietf:params:jmap:mail': {}, 'urn:ietf:params:jmap:submission': {} } },
+          support: { name: 'support@example.com', accountCapabilities: { 'urn:ietf:params:jmap:mail': {} } },
+        },
+        primaryAccounts: {
+          'urn:ietf:params:jmap:mail': 'account-1',
+          'urn:ietf:params:jmap:submission': 'account-1',
+        },
+      },
+    });
+
+    const captured: CapturedRequest[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = JSON.parse((init as { body: string }).body) as CapturedRequest;
+      captured.push(body);
+      const callIdx = captured.length - 1;
+      const payload = callIdx === 0
+        ? { methodResponses: [['Mailbox/get', { list: [{ id: 'support-drafts', role: 'drafts' }, { id: 'support-sent', role: 'sent' }] }, '0']] }
+        : callIdx === 1
+          ? { methodResponses: [['Identity/get', { list: [{ id: 'support-id', email: 'support@example.com', mayDelete: false }] }, '0']] }
+          : {
+              methodResponses: [
+                ['Email/set', { created: { [Object.keys((body.methodCalls[0][1] as { create: Record<string, unknown> }).create)[0]]: { id: 'new-email' } } }, '0'],
+                ['EmailSubmission/set', { created: { '1': { id: 'sub-1' } } }, '1'],
+              ],
+            };
+      return {
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve(JSON.stringify(payload)),
+        json: () => Promise.resolve(payload),
+      } as Response;
+    });
+
+    await client.sendEmail(
+      ['recipient@example.com'],
+      'Shared reply',
+      'body',
+      undefined,
+      undefined,
+      'support-id',
+      'support@example.com',
+    );
+
+    expect(captured[2].methodCalls[0][1].accountId).toBe('support');
+    expect(captured[2].methodCalls[1][1].accountId).toBe('support');
+  });
+
   it('does not keep the active account envelope when a From override matches the shared account identity', async () => {
     const client = createClient();
     Object.assign(client, {
