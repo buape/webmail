@@ -2564,6 +2564,7 @@ export class JMAPClient implements IJMAPClient {
     }
 
     let finalIdentityId = identityId;
+    let finalIdentityEmail: string | undefined;
     let identityReplyTo: EmailAddress[] | undefined;
     {
       const identityResponse = await this.request([
@@ -2584,8 +2585,10 @@ export class JMAPClient implements IJMAPClient {
             matchingIdentity = identities.find((id) => id.email === target)
               || (!target.includes('@') ? identities.find((id) => id.email.split('@')[0] === target) : undefined);
           }
-          finalIdentityId = matchingIdentity?.id || identities[0].id;
-          identityReplyTo = matchingIdentity?.replyTo || identities[0].replyTo;
+          const selectedIdentity = matchingIdentity || identities[0];
+          finalIdentityId = selectedIdentity.id;
+          finalIdentityEmail = selectedIdentity.email;
+          identityReplyTo = selectedIdentity.replyTo;
         }
       }
     }
@@ -2596,6 +2599,18 @@ export class JMAPClient implements IJMAPClient {
     const normalizedReferences = references?.map(stripMessageIdBrackets).filter(Boolean);
 
     const sanitizedFromName = sanitizeIdentityDisplayName(fromName);
+    const headerFromEmail = parseRecipientString(fromEmail || this.username).email;
+    let effectiveEnvelopeMailFrom = envelopeMailFrom;
+    if (effectiveEnvelopeMailFrom && finalIdentityEmail) {
+      const envelopeEmail = parseRecipientString(effectiveEnvelopeMailFrom).email;
+      // If the UI sent a custom From override for an address that is itself a
+      // real identity on the target/shared account, do not keep the previous
+      // active account's envelope address. Stalwart requires envelope MAIL FROM
+      // to match the chosen identity, and otherwise rejects with forbiddenFrom.
+      if (envelopeEmail !== finalIdentityEmail && headerFromEmail === finalIdentityEmail) {
+        effectiveEnvelopeMailFrom = undefined;
+      }
+    }
     // Always create a new email with the final body content
     const emailCreate: Record<string, unknown> = {
       from: [{ ...(sanitizedFromName ? { name: sanitizedFromName } : {}), email: fromEmail || this.username }],
@@ -2662,11 +2677,11 @@ export class JMAPClient implements IJMAPClient {
     // is omitted the server derives mailFrom from the Identity.
     const buildSubmissionCreate = (submissionId: string): Record<string, unknown> => {
       const create: Record<string, unknown> = { emailId: `#${emailId}`, identityId: finalIdentityId };
-      if (holdForSeconds || envelopeMailFrom) {
+      if (holdForSeconds || effectiveEnvelopeMailFrom) {
         const envelopeRecipients = normalizeEnvelopeRecipients([...to, ...(cc || []), ...(bcc || [])]);
         create.envelope = {
           mailFrom: {
-            email: parseRecipientString(envelopeMailFrom || fromEmail || this.username).email,
+            email: parseRecipientString(effectiveEnvelopeMailFrom || finalIdentityEmail || fromEmail || this.username).email,
             ...(holdForSeconds ? { parameters: { HOLDFOR: String(holdForSeconds) } } : {}),
           },
           rcptTo: envelopeRecipients,
