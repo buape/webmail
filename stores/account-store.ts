@@ -30,6 +30,7 @@ export interface AccountEntry {
   displayName: string;
   email: string;
   avatarColor: string;
+  avatarUrl?: string;
   /** Timestamp of last successful login */
   lastLoginAt: number;
   /** Whether this account is currently connected */
@@ -83,6 +84,7 @@ export const useAccountStore = create<AccountState>()(
                     errorMessage: undefined,
                     lastLoginAt: entry.lastLoginAt,
                     authMode: entry.authMode,
+                    avatarUrl: entry.avatarUrl,
                   }
                 : a
             ),
